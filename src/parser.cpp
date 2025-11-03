@@ -3,22 +3,15 @@
 #include "parser.hpp"
 #include <cmark.h>
 
-cmark_node *Parser::feed_token(std::string content) {
-  cmark_parser *parser = cmark_parser_new_with_mem_into_root(
-      options, cmark_get_default_mem_allocator(), _root);
+std::string stream_tokens(std::istream &input) {}
+
+cmark_iter *Parser::parse_line(std::string &content) {
   cmark_node *document;
-
-  S_parser_feed(parser, (const unsigned char *)buffer, len, true);
-
-  document = cmark_parser_finish(parser);
-  cmark_parser_free(parser);
-  _root = document;
-  return document;
+  cmark_parser_feed(parser(), content.c_str(), content.size());
+  _iter.reset(cmark_iter_new(current()));
+  return iter();
 }
 
-cmark_node *Parser::root() { return _root; }
-
-cmark_node *Parser::active() { return _active; }
-
-cmark_parser *Parser::parser() { return _parser; }
-cmark_iter *Parser::iter() { return _iter; }
+cmark_parser *Parser::parser() { return _parser.get(); }
+cmark_iter *Parser::iter() { return _iter.get(); }
+cmark_node *Parser::current() { return _current.get(); }
