@@ -12,10 +12,8 @@
 class Parser {
 private:
   static void free_parser(cmark_parser *cp) {
-    if (cp) {
-      cmark_parser_finish(cp);
+    if (cp)
       cmark_parser_free(cp);
-    }
   }
 
   static void free_node(cmark_node *cn) {

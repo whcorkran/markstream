@@ -1,3 +1,4 @@
 cmark
 build
 .vscode
+.cache
