@@ -1,55 +1,119 @@
 #ifndef PARSER_H
 #define PARSER_H
 
+#include "node.hpp"  // Includes tree.hpp
 #include <cmark.h>
-#include <cstddef>
-#include <istream>
-#include <memory>
-#include <parser.h>
 #include <string>
-#include <vector>
 
-class Parser {
-private:
-  static void free_parser(cmark_parser *cp) {
-    if (cp)
-      cmark_parser_free(cp);
-  }
+class StreamParser {
+    public:
+        explicit StreamParser();
+        ~StreamParser();
+        void parse_line(const std::string& line);
 
-  static void free_node(cmark_node *cn) {
-    if (cn)
-      cmark_node_free(cn);
-  }
+        Node get_root() const {return root;};
+        Node get_deepest_open_block() const {return current_block;};
+        bool is_complete() const;
+        // temporary - needed for cmark_node allocation
+        cmark_mem* get_mem() const {return mem;};
 
-  static void free_iter(cmark_iter *ci) {
-    if (ci)
-      cmark_iter_free(ci);
-  }
+    private:
+        cmark_mem* mem; // cmark memory allocator
 
-  std::unique_ptr<cmark_parser, decltype(&free_parser)> _parser;
-  std::unique_ptr<cmark_node, decltype(&free_node)> _current;
-  std::unique_ptr<cmark_iter, decltype(&free_iter)> _iter;
-  std::string _view;
+        Node root;
+        Node current_block; // deepest open block
 
-public:
-  Parser(int options = 0)
-      : _parser(cmark_parser_new(0), &free_parser), _iter(nullptr, &free_iter),
-        _current(_parser.get()->root, &free_node) {
-    _view.reserve(4096);
-  }
+        int line_number;
+        size_t offset;
+        size_t column;
+        size_t first_nonspace;
+        size_t first_nonspace_column;
+        size_t thematic_break_kill_pos;
+        int indent;
+        bool blank;
+        bool partially_consumed_tab;
+        size_t last_line_length;
 
-  Parser(const Parser &) = delete;
-  Parser &operator=(const Parser &) = delete;
+        std::string content;
+        std::string curline;
 
-  void stream_tokens(std::istream &socket);
+        // line processing
+        void find_first_nonspace(const std::string& line);
+        void advance_offset(const std::string& line, size_t count, bool columns);
+        bool is_line_end_char(char c) const;
+        bool is_space_or_tab(char c) const;
+        bool is_blank(const std::string& line, size_t offset) const;
 
-  cmark_iter *parse_line(std::string &content);
-  std::string render(cmark_iter *tree);
+        // block continutation checkers
+        bool parse_block_quote_prefix(const std::string& line);
+        bool parse_node_item_prefix(const std::string& line, Node container);
+        bool parse_code_block_prefix(const std::string& line, Node container, bool* should_continue);
+        bool parse_html_block_prefix(Node container);
 
-  // accessors
-  cmark_parser *parser();
-  cmark_iter *iter();
-  cmark_node *current();
-};
+        // block creation
+        Node make_block(BlockType tag, int start_column);
+        Node add_child(Node parent, BlockType block_type, int start_column);
+        Node finalize(Node b);
 
+        // block type checks
+        bool can_contain(BlockType parent_type, BlockType child_type) const;
+        bool accepts_lines(BlockType block_type) const;
+        bool last_child_is_open(Node container) const;
+
+        bool last_line_blank(Node node) const;
+        void set_last_line_blank(Node node, bool is_blank);
+
+        // core algorithm
+        Node check_open_blocks(const std::string& line, bool* all_matched);
+        void open_new_blocks(Node* container, const std::string& line, bool all_matched);
+        void add_text_to_container(Node container, Node last_matched_container, const std::string& line);
+
+        // text accumulation
+        void add_line(const std::string& line);
+
+        // List parsing
+        size_t parse_list_marker(const std::string& input, size_t pos, bool interrupts_paragraph, ListMetadata& data);
+        
+        // Thematic break
+        size_t scan_thematic_break(const std::string& input, size_t offset);
+        
+        // Utility
+        char peek_at(const std::string& input, size_t pos) const;
+        void chop_trailing_hashtags(std::string& line);
+
+
+    };
+
+
+
+// Spec:
+
+// We stream in a line (characters followed by /n)
+
+// Depending on the line, the Document is modified like so:
+
+    // One or more open blocks may be closed.  
+
+    // One or more new blocks may be created as children of the last open block.
+    // Text may be added to the last (deepest) open block remaining on the tree.
+
+
+// For each line, we follow this procedure:
+
+//     First we iterate through the open blocks, starting with the root document, and descending through last children down to the last open block. 
+//     Each block imposes a condition that the line must satisfy if the block is to remain open. 
+//     For example, a block quote requires a > character. 
+//     A paragraph requires a non-blank line. 
+//     In this phase we may match all or just some of the open blocks. But we cannot close unmatched blocks yet, because we may have a lazy continuation line.
+
+
+//     Next, after consuming the continuation markers for existing blocks, we look for new block starts (e.g. > for a block quote. 
+//     If we encounter a new block start, we close any blocks unmatched in step 1 before creating the new block as a child of the last matched block.
+
+
+//     Finally, we look at the remainder of the line (after block markers like >, list markers, and indentation have been consumed). 
+//     This is text that can be incorporated into the last open block (a paragraph, code block, heading, or raw HTML).
+
+// Reference link definitions are detected when a paragraph is closed; 
+// the accumulated text lines are parsed to see if they begin with one or more reference link definitions. Any remainder becomes a normal paragraph.
 #endif // PARSER_H

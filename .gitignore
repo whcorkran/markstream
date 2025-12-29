@@ -2,3 +2,4 @@ cmark
 build
 .vscode
 .cache
+.cursor
