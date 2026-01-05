@@ -23,6 +23,7 @@ FetchContent_MakeAvailable(cmark)
 add_executable(markstream
         src/main.cpp
         src/parser.cpp
+        src/node.cpp
 )
 
 target_include_directories(markstream PRIVATE

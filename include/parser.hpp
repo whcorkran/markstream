@@ -12,7 +12,7 @@ class StreamParser {
         void parse_line(const std::string& line);
 
         Node get_root() const {return root;};
-        Node get_deepest_open_block() const {return current_block;};
+        Node get_deepest_open_block() const;
         bool is_complete() const;
         // temporary - needed for cmark_node allocation
         cmark_mem* get_mem() const {return mem;};
@@ -21,39 +21,33 @@ class StreamParser {
         cmark_mem* mem; // cmark memory allocator
 
         Node root;
-        Node current_block; // deepest open block
-
-        int line_number;
-        size_t offset;
-        size_t column;
-        size_t first_nonspace;
-        size_t first_nonspace_column;
-        size_t thematic_break_kill_pos;
-        int indent;
-        bool blank;
-        bool partially_consumed_tab;
-        size_t last_line_length;
-
-        std::string content;
-        std::string curline;
+        std::string content; // accumulated text for deepest open block
 
         // line processing
-        void find_first_nonspace(const std::string& line);
-        void advance_offset(const std::string& line, size_t count, bool columns);
+        struct FirstNonspace {
+            size_t offset;
+            size_t column;
+            int indent;
+            bool blank;
+        };
+
+
+        FirstNonspace find_first_nonspace(const std::string& line, size_t offset, size_t column) const;
+        void advance_offset(const std::string& line, size_t& offset, size_t& column, size_t count, bool columns, bool& partially_consumed_tab) const;
         bool is_line_end_char(char c) const;
         bool is_space_or_tab(char c) const;
         bool is_blank(const std::string& line, size_t offset) const;
 
         // block continutation checkers
-        bool parse_block_quote_prefix(const std::string& line);
-        bool parse_node_item_prefix(const std::string& line, Node container);
-        bool parse_code_block_prefix(const std::string& line, Node container, bool* should_continue);
-        bool parse_html_block_prefix(Node container);
+        bool parse_block_quote_prefix(const std::string& line, size_t& offset, size_t& column, bool& partially_consumed_tab, const FirstNonspace& fn) const;
+        bool parse_node_item_prefix(const std::string& line, Node container, size_t& offset, size_t& column, bool& partially_consumed_tab, const FirstNonspace& fn) const;
+        bool parse_code_block_prefix(const std::string& line, Node container, size_t& offset, size_t& column, bool& partially_consumed_tab, bool* should_continue, const FirstNonspace& fn) const;
+        bool parse_html_block_prefix(Node container, const FirstNonspace& fn) const;
 
         // block creation
-        Node make_block(BlockType tag, int start_column);
-        Node add_child(Node parent, BlockType block_type, int start_column);
-        Node finalize(Node b);
+        Node make_block(BlockType tag, int start_column, int line_number) const;
+        Node add_child(Node parent, BlockType block_type, int start_column, int line_number);
+        Node finalize(Node b, int line_number, size_t last_line_length, const std::string& curline);
 
         // block type checks
         bool can_contain(BlockType parent_type, BlockType child_type) const;
@@ -64,22 +58,22 @@ class StreamParser {
         void set_last_line_blank(Node node, bool is_blank);
 
         // core algorithm
-        Node check_open_blocks(const std::string& line, bool* all_matched);
-        void open_new_blocks(Node* container, const std::string& line, bool all_matched);
-        void add_text_to_container(Node container, Node last_matched_container, const std::string& line);
+        Node check_open_blocks(const std::string& line, bool* all_matched, size_t& offset, size_t& column, bool& partially_consumed_tab, size_t& thematic_break_kill_pos, int line_number);
+        void open_new_blocks(Node* container, const std::string& line, bool all_matched, size_t& offset, size_t& column, bool& partially_consumed_tab, size_t& thematic_break_kill_pos, int line_number);
+        void add_text_to_container(Node container, Node last_matched_container, const std::string& line, size_t& offset, size_t& column, bool& partially_consumed_tab, int line_number, const FirstNonspace& fn);
 
         // text accumulation
-        void add_line(const std::string& line);
+        void add_line(const std::string& line, size_t offset, size_t column, bool partially_consumed_tab);
 
         // List parsing
-        size_t parse_list_marker(const std::string& input, size_t pos, bool interrupts_paragraph, ListMetadata& data);
+        size_t parse_list_marker(const std::string& input, size_t pos, bool interrupts_paragraph, ListMetadata& data) const;
         
         // Thematic break
-        size_t scan_thematic_break(const std::string& input, size_t offset);
+        size_t scan_thematic_break(const std::string& input, size_t offset, size_t& kill_pos) const;
         
         // Utility
         char peek_at(const std::string& input, size_t pos) const;
-        void chop_trailing_hashtags(std::string& line);
+        void chop_trailing_hashtags(std::string& line) const;
 
 
     };

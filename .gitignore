@@ -3,3 +3,5 @@ build
 .vscode
 .cache
 .cursor
+CLAUDE.md
+IMPLEMENTATION_PLAN.md
