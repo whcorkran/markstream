@@ -1,97 +1,19 @@
-#ifndef SCANNERS
-#define SCANNERS
+#ifndef SCANNERS_HPP
+#define SCANNERS_HPP
 
-#include <array>
 #include <cstdint>
 #include <string>
 
-enum class BlockType : uint8_t {
-  Document,
-  BlockQuote,
-  List,
-  Item,
-  CodeBlock,
-  Heading,
-  HtmlBlock,
-  Paragraph,
-  ThematicBreak
-};
+// Character classification utilities
+namespace scan {
 
-struct BlockSpec {
-  BlockType type;
-
-  // Delimiters
-  char delim_char = '\0';
-  char alternate_delims[16] = {'\0'};
-  size_t min_repeat = 1;
-  size_t max_repeat = 1;
-
-  // Structure
-  bool is_container = false;
-  bool is_leaf = true;
-
-  // Behavior
-  bool accepts_lazy_continuation = false;
-  bool requires_continuation_marker = false;
-  bool is_single_line = false;
-  bool autoclose_on_parent_close = false;
-};
-
-// Using designated initializers - only non-default values shown
-inline constexpr std::array<BlockSpec, 9> BlockSpecs{{
-
-    {.type = BlockType::Document, .is_container = true, .is_leaf = false},
-
-    // BlockQuote
-    {.type = BlockType::BlockQuote,
-     .delim_char = '>',
-     .is_container = true,
-     .is_leaf = false,
-     .requires_continuation_marker = true},
-
-    // List
-    {.type = BlockType::List, .is_container = true, .is_leaf = false},
-
-    // Item
-    {.type = BlockType::Item,
-     .delim_char = '-',
-     .is_container = true,
-     .is_leaf = false},
-
-    // CodeBlock
-    {.type = BlockType::CodeBlock,
-     .delim_char = '`',
-     .alternate_delims = {'`', '~', '\0'},
-     .min_repeat = 3,
-     .max_repeat = 0,
-     .autoclose_on_parent_close = true},
-
-    // Heading - ATX ONLY
-    {.type = BlockType::Heading,
-     .delim_char = '#',
-     .min_repeat = 1,
-     .max_repeat = 6,
-     .is_single_line = true},
-
-    // HtmlBlock
-    {.type = BlockType::HtmlBlock, .delim_char = '<', .min_repeat = 1},
-
-    // Paragraph
-    {.type = BlockType::Paragraph, .accepts_lazy_continuation = true},
-
-    // ThematicBreak
-    {.type = BlockType::ThematicBreak,
-     .delim_char = '*',
-     .alternate_delims = {'*', '-', '_', '\0'},
-     .min_repeat = 3,
-     .max_repeat = 0,
-     .is_single_line = true},
-}};
-
-namespace validation {
 inline bool is_space(char c) {
   return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
+
+inline bool is_space_or_tab(char c) { return c == ' ' || c == '\t'; }
+
+inline bool is_line_end(char c) { return c == '\n' || c == '\r' || c == '\0'; }
 
 inline bool is_digit(char c) { return c >= '0' && c <= '9'; }
 
@@ -99,26 +21,109 @@ inline bool is_alpha(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }
 
-inline bool is_punct(char c) { return (c >= '!' && c <= '/'); }
+inline bool is_alphanumeric(char c) { return is_alpha(c) || is_digit(c); }
 
-inline constexpr const BlockSpec get_spec(BlockType block) {
-  return BlockSpecs[static_cast<size_t>(block)];
+inline bool is_punct(char c) {
+  return (c >= '!' && c <= '/') || (c >= ':' && c <= '@') ||
+         (c >= '[' && c <= '`') || (c >= '{' && c <= '~');
 }
 
-} // namespace validation
+inline char to_lower(char c) {
+  if (c >= 'A' && c <= 'Z')
+    return c + 32;
+  return c;
+}
 
-// Generic delimiter scanner (handles primary + alternates)
-size_t scan_block_delimiter(const std::string &line, size_t offset,
-                            BlockType block, char *out_delim_char);
+// Count leading spaces (up to limit, treating tab as up to 4 spaces)
+size_t scan_indentation(const std::string &line, size_t offset,
+                        size_t *out_columns);
 
-// Block-specific scanners
+} // namespace scan
+
+// HTML block types (CommonMark spec)
+enum class HtmlBlockType : uint8_t {
+  None = 0,
+  Type1 = 1, // <script>, <pre>, <style>, <textarea>
+  Type2 = 2, // <!-- comment -->
+  Type3 = 3, // <? processing instruction ?>
+  Type4 = 4, // <!DECLARATION>
+  Type5 = 5, // <![CDATA[ ]]>
+  Type6 = 6, // Standard HTML tags (div, p, etc.) - ends on blank line
+  Type7 = 7  // Other tags - ends on blank line
+};
+
+// Code fence info
+struct CodeFenceInfo {
+  char fence_char;     // '`' or '~'
+  size_t fence_length; // Number of fence chars (>= 3)
+  std::string info;    // Info string after fence (language, etc.)
+};
+
+// List marker info
+struct ListMarkerInfo {
+  char marker_char;       // '-', '*', '+' for bullet; '.' or ')' for ordered
+  bool is_ordered;        // true for ordered lists
+  int start_number;       // Starting number for ordered lists (1-9 digits)
+  size_t marker_width;    // Total width of marker including trailing space
+  size_t content_offset;  // Offset where content begins after marker
+  size_t padding;         // Spaces after marker
+};
+
+// ATX Heading: 1-6 '#' followed by space/tab or end of line
+// Returns heading level (1-6) or 0 if no match
 size_t scan_atx_heading_start(const std::string &line, size_t offset);
+
+// ATX Heading closing sequence: optional trailing '#'s
+// Returns number of chars in closing sequence (for trimming)
+size_t scan_atx_heading_end(const std::string &line);
+
+// Setext heading underline: '=' or '-' (at least 1), optionally followed by spaces
+// Returns length matched, sets out_char to '=' or '-'
+size_t scan_setext_heading_line(const std::string &line, size_t offset,
+                                char *out_char);
+
+// Code fence opener: 3+ '`' or '~', optionally followed by info string
+// Returns fence length, fills info struct
+size_t scan_open_code_fence(const std::string &line, size_t offset,
+                            CodeFenceInfo *out_info);
+
+// Code fence closer: 3+ of same char as opener, nothing else on line
+// Returns fence length if closes fence, 0 otherwise
+size_t scan_close_code_fence(const std::string &line, size_t offset,
+                             char fence_char, size_t min_length);
+
+// Thematic break: 3+ of same char (*, -, _) with optional spaces between
+// Returns count of marker chars, sets out_char
 size_t scan_thematic_break(const std::string &line, size_t offset,
-                           char *out_delim_char);
+                           char *out_char);
 
-// HTML blocks
-size_t scan_html_block_start(const std::string &line, size_t offset);
-size_t scan_html_block_start_7(const std::string &line, size_t offset);
-size_t scan_html_block_end_N(const std::string &line, size_t offset);
+// Block quote marker: '>' optionally followed by space
+// Returns 1 if found (just the '>'), 0 otherwise
+size_t scan_block_quote_start(const std::string &line, size_t offset);
 
-#endif // SCANNERS
+// List item marker (bullet or ordered)
+// Returns marker width if found, 0 otherwise; fills out_info
+size_t scan_list_marker(const std::string &line, size_t offset,
+                        ListMarkerInfo *out_info);
+
+// HTML block start detection
+// Returns HtmlBlockType (1-7) or None
+HtmlBlockType scan_html_block_start(const std::string &line, size_t offset);
+
+// HTML block type 7 specifically (open/close tag not in type 6 list)
+// Returns true if matches type 7
+bool scan_html_block_start_7(const std::string &line, size_t offset);
+
+// HTML block end conditions (type-specific)
+// Returns true if this line ends the HTML block
+bool scan_html_block_end(const std::string &line, size_t offset,
+                         HtmlBlockType type);
+
+// Blank line detection
+bool is_blank_line(const std::string &line, size_t offset);
+
+// Link reference definition (for future use)
+// Returns length matched or 0
+size_t scan_link_label(const std::string &line, size_t offset);
+
+#endif // SCANNERS_HPP

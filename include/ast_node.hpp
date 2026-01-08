@@ -1,0 +1,124 @@
+#ifndef AST_NODE_HPP
+#define AST_NODE_HPP
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <variant>
+
+enum class NodeType : uint8_t {
+  Document = 0,
+  BlockQuote,
+  List,
+  Item,
+  CodeBlock,
+  Heading,
+  HtmlBlock,
+  Paragraph,
+  ThematicBreak
+};
+
+// Block-specific metadata (only what varies per block type)
+struct ListData {
+  int start;           // Starting number (ordered lists)
+  int marker_offset;   // Indentation before marker
+  int padding;         // Spaces after marker (content indent)
+  char marker_char;    // '-', '*', '+' for bullet; '.' or ')' for ordered
+  bool is_ordered;     // true for ordered lists
+  bool is_tight;       // Tight vs loose list
+
+  // Check if two lists match (for continuation)
+  bool matches(const ListData &other) const {
+    return is_ordered == other.is_ordered && marker_char == other.marker_char;
+  }
+};
+
+struct CodeData {
+  std::string info;     // Language/info string
+  uint8_t fence_length; // 0 = indented, 3+ = fenced
+  uint8_t fence_offset; // Indentation of opening fence
+  char fence_char;      // '`' or '~'
+
+  bool is_fenced() const { return fence_length > 0; }
+};
+
+struct HeadingData {
+  uint8_t level; // 1-6
+  bool setext;   // true = setext, false = ATX
+};
+
+// Node flags
+enum NodeFlags : uint16_t { NODE_OPEN = 1 << 0, NODE_LAST_LINE_BLANK = 1 << 1 };
+
+class ASTNode : public std::enable_shared_from_this<ASTNode> {
+public:
+  using Ptr = std::shared_ptr<ASTNode>;
+  using WeakPtr = std::weak_ptr<ASTNode>;
+  using Metadata =
+      std::variant<std::monostate, ListData, CodeData, HeadingData, int>;
+
+  // Factory (nodes always created as shared_ptr)
+  static Ptr create(NodeType type, int line = 0, int col = 0);
+
+  // Type
+  NodeType type() const { return type_; }
+
+  // Flags
+  bool is_open() const { return flags_ & NODE_OPEN; }
+  void set_open(bool v) { v ? flags_ |= NODE_OPEN : flags_ &= ~NODE_OPEN; }
+  bool last_line_blank() const { return flags_ & NODE_LAST_LINE_BLANK; }
+  void set_last_line_blank(bool v) {
+    v ? flags_ |= NODE_LAST_LINE_BLANK : flags_ &= ~NODE_LAST_LINE_BLANK;
+  }
+
+  // Position
+  int start_line() const { return start_line_; }
+  int start_col() const { return start_col_; }
+  int end_line() const { return end_line_; }
+  int end_col() const { return end_col_; }
+  void set_start(int line, int col) {
+    start_line_ = line;
+    start_col_ = col;
+  }
+  void set_end(int line, int col) {
+    end_line_ = line;
+    end_col_ = col;
+  }
+
+  // Tree navigation
+  Ptr parent() const { return parent_.lock(); }
+  Ptr first_child() const { return first_child_; }
+  Ptr last_child() const { return last_child_; }
+  Ptr next() const { return next_; }
+  Ptr prev() const { return prev_.lock(); }
+
+  // Tree mutation
+  void append_child(Ptr child);
+  void unlink();
+
+  // Metadata access
+  template <typename T> T *get_data() { return std::get_if<T>(&data_); }
+  template <typename T> const T *get_data() const {
+    return std::get_if<T>(&data_);
+  }
+  template <typename T> void set_data(T &&d) { data_ = std::forward<T>(d); }
+
+private:
+  ASTNode(NodeType type, int line, int col)
+      : type_(type), flags_(NODE_OPEN), start_line_(line), start_col_(col),
+        end_line_(0), end_col_(0) {}
+
+  NodeType type_;
+  uint16_t flags_;
+  int start_line_, start_col_, end_line_, end_col_;
+
+  WeakPtr parent_;
+  Ptr first_child_;
+  Ptr last_child_;
+  Ptr next_;
+  WeakPtr prev_;
+
+  Metadata data_;
+};
+
+#endif // AST_NODE_HPP
