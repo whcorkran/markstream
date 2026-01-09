@@ -6,10 +6,10 @@
 #include <string>
 #include <unordered_map>
 
-class StreamParser {
+class Parser {
 public:
-  explicit StreamParser();
-  ~StreamParser() = default;
+  explicit Parser();
+  ~Parser() = default;
 
   void parse_line(const std::string &line);
 
@@ -62,8 +62,7 @@ private:
   // Block creation
   ASTNode::Ptr add_child(ASTNode::Ptr parent, NodeType block_type,
                          int start_column);
-  ASTNode::Ptr finalize(ASTNode::Ptr b, size_t last_line_length,
-                        const std::string &curline);
+  ASTNode::Ptr finalize(ASTNode::Ptr b);
 
   // Block type checks
   bool can_contain(NodeType parent_type, NodeType child_type) const;
@@ -73,12 +72,10 @@ private:
   // Core algorithm phases
   ASTNode::Ptr check_open_blocks(const std::string &line, bool *all_matched,
                                  size_t &offset, size_t &column,
-                                 bool &partially_consumed_tab,
-                                 size_t &thematic_break_kill_pos);
+                                 bool &partially_consumed_tab);
   void open_new_blocks(ASTNode::Ptr *container, const std::string &line,
                        bool all_matched, size_t &offset, size_t &column,
-                       bool &partially_consumed_tab,
-                       size_t &thematic_break_kill_pos);
+                       bool &partially_consumed_tab);
   void add_text_to_container(ASTNode::Ptr container,
                              ASTNode::Ptr last_matched_container,
                              const std::string &line, size_t &offset,

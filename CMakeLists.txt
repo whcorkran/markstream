@@ -33,7 +33,6 @@ FetchContent_MakeAvailable(cmark googletest)
 # ---- Library for core functionality (shared between main and tests) ----
 add_library(markstream_lib STATIC
         src/parser.cpp
-        src/node.cpp
         src/scanners.cpp
         src/stream_handlers.cpp
         src/ast_node.cpp

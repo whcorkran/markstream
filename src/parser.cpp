@@ -6,21 +6,15 @@
 #define CODE_INDENT 4
 #define TAB_STOP 4
 
-// ============================================================================
 // Constructor
-// ============================================================================
-
-StreamParser::StreamParser() {
+Parser::Parser() {
   root_ = ASTNode::create(NodeType::Document, 1, 1);
   root_->set_open(true);
   current_line_ = 0;
 }
 
-// ============================================================================
-// Public methods
-// ============================================================================
-
-ASTNode::Ptr StreamParser::get_deepest_open_block() const {
+// get the deepest open block, will always parent newly created blocks
+ASTNode::Ptr Parser::get_deepest_open_block() const {
   ASTNode::Ptr current = root_;
   while (current) {
     ASTNode::Ptr last = current->last_child();
@@ -32,27 +26,26 @@ ASTNode::Ptr StreamParser::get_deepest_open_block() const {
   return current;
 }
 
-bool StreamParser::is_complete() const {
+// Check if document has no open nested blocks (only root may be open)
+bool Parser::is_complete() const {
   if (!root_->is_open()) {
     return true;
   }
-  ASTNode::Ptr deepest = get_deepest_open_block();
-  return deepest == root_ && !deepest->is_open();
+  // Document is open - check if there are any open children
+  ASTNode::Ptr last = root_->last_child();
+  return !last || !last->is_open();
 }
 
-// ============================================================================
 // Line processing helpers
-// ============================================================================
-
-char StreamParser::peek_at(const std::string &input, size_t pos) const {
+char Parser::peek_at(const std::string &input, size_t pos) const {
   if (pos >= input.size())
     return '\0';
   return input[pos];
 }
 
-StreamParser::FirstNonspace
-StreamParser::find_first_nonspace(const std::string &line, size_t offset,
-                                  size_t column) const {
+Parser::FirstNonspace Parser::find_first_nonspace(const std::string &line,
+                                                  size_t offset,
+                                                  size_t column) const {
   FirstNonspace result;
   result.offset = offset;
   result.column = column;
@@ -82,9 +75,9 @@ StreamParser::find_first_nonspace(const std::string &line, size_t offset,
   return result;
 }
 
-void StreamParser::advance_offset(const std::string &line, size_t &offset,
-                                  size_t &column, size_t count, bool columns,
-                                  bool &partially_consumed_tab) const {
+void Parser::advance_offset(const std::string &line, size_t &offset,
+                            size_t &column, size_t count, bool columns,
+                            bool &partially_consumed_tab) const {
   while (count > 0 && offset < line.size()) {
     char c = line[offset];
     if (c == '\t') {
@@ -114,22 +107,20 @@ void StreamParser::advance_offset(const std::string &line, size_t &offset,
 // Block type checks
 // ============================================================================
 
-bool StreamParser::can_contain(NodeType parent_type,
-                               NodeType child_type) const {
+bool Parser::can_contain(NodeType parent_type, NodeType child_type) const {
   return (parent_type == NodeType::Document ||
           parent_type == NodeType::BlockQuote ||
           parent_type == NodeType::Item ||
           (parent_type == NodeType::List && child_type == NodeType::Item));
 }
 
-bool StreamParser::accepts_lines(NodeType block_type) const {
-  return (block_type == NodeType::Paragraph ||
-          block_type == NodeType::Heading ||
-          block_type == NodeType::CodeBlock ||
-          block_type == NodeType::HtmlBlock);
+bool Parser::accepts_lines(NodeType block_type) const {
+  return (
+      block_type == NodeType::Paragraph || block_type == NodeType::Heading ||
+      block_type == NodeType::CodeBlock || block_type == NodeType::HtmlBlock);
 }
 
-bool StreamParser::last_child_is_open(ASTNode::Ptr container) const {
+bool Parser::last_child_is_open(ASTNode::Ptr container) const {
   if (!container)
     return false;
   ASTNode::Ptr last = container->last_child();
@@ -140,15 +131,14 @@ bool StreamParser::last_child_is_open(ASTNode::Ptr container) const {
 // Block creation
 // ============================================================================
 
-ASTNode::Ptr StreamParser::add_child(ASTNode::Ptr parent, NodeType block_type,
-                                     int start_column) {
+ASTNode::Ptr Parser::add_child(ASTNode::Ptr parent, NodeType block_type,
+                               int start_column) {
   if (!parent)
     return nullptr;
 
   // If parent can't contain this child, finalize parent and move up
-  std::string empty_line;
   while (!can_contain(parent->type(), block_type)) {
-    parent = finalize(parent, 0, empty_line);
+    parent = finalize(parent);
     if (!parent)
       return nullptr;
   }
@@ -158,36 +148,15 @@ ASTNode::Ptr StreamParser::add_child(ASTNode::Ptr parent, NodeType block_type,
   return child;
 }
 
-ASTNode::Ptr StreamParser::finalize(ASTNode::Ptr b, size_t last_line_length,
-                                    const std::string &curline) {
+ASTNode::Ptr Parser::finalize(ASTNode::Ptr b) {
   if (!b || !b->is_open()) {
     return b ? b->parent() : nullptr;
   }
 
   b->set_open(false);
 
-  // Set end position
-  if (curline.empty()) {
-    // End of input
-    b->set_end(current_line_, static_cast<int>(last_line_length));
-  } else {
-    NodeType btype = b->type();
-    const CodeData *code = b->get_data<CodeData>();
-    const HeadingData *heading = b->get_data<HeadingData>();
-
-    if (btype == NodeType::Document ||
-        (btype == NodeType::CodeBlock && code && code->is_fenced()) ||
-        (btype == NodeType::Heading && heading && heading->setext)) {
-      size_t end_col = curline.size();
-      if (end_col > 0 && curline[end_col - 1] == '\n')
-        end_col -= 1;
-      if (end_col > 0 && curline[end_col - 1] == '\r')
-        end_col -= 1;
-      b->set_end(current_line_, static_cast<int>(end_col));
-    } else {
-      b->set_end(current_line_ - 1, static_cast<int>(last_line_length));
-    }
-  }
+  // Set end position to previous line (block ended before current line)
+  b->set_end(current_line_ > 0 ? current_line_ - 1 : 0, 0);
 
   // Process content based on block type
   NodeType btype = b->type();
@@ -262,10 +231,10 @@ ASTNode::Ptr StreamParser::finalize(ASTNode::Ptr b, size_t last_line_length,
 // Block continuation checkers
 // ============================================================================
 
-bool StreamParser::parse_block_quote_prefix(const std::string &line,
-                                            size_t &offset, size_t &column,
-                                            bool &partially_consumed_tab,
-                                            const FirstNonspace &fn) const {
+bool Parser::parse_block_quote_prefix(const std::string &line, size_t &offset,
+                                      size_t &column,
+                                      bool &partially_consumed_tab,
+                                      const FirstNonspace &fn) const {
   if (fn.indent <= 3 && peek_at(line, fn.offset) == '>') {
     advance_offset(line, offset, column, fn.indent + 1, true,
                    partially_consumed_tab);
@@ -279,11 +248,11 @@ bool StreamParser::parse_block_quote_prefix(const std::string &line,
   return false;
 }
 
-bool StreamParser::parse_list_item_prefix(const std::string &line,
-                                          ASTNode::Ptr container,
-                                          size_t &offset, size_t &column,
-                                          bool &partially_consumed_tab,
-                                          const FirstNonspace &fn) const {
+bool Parser::parse_list_item_prefix(const std::string &line,
+                                    ASTNode::Ptr container, size_t &offset,
+                                    size_t &column,
+                                    bool &partially_consumed_tab,
+                                    const FirstNonspace &fn) const {
   if (!container)
     return false;
 
@@ -305,12 +274,12 @@ bool StreamParser::parse_list_item_prefix(const std::string &line,
   return false;
 }
 
-bool StreamParser::parse_code_block_prefix(const std::string &line,
-                                           ASTNode::Ptr container,
-                                           size_t &offset, size_t &column,
-                                           bool &partially_consumed_tab,
-                                           bool *should_continue,
-                                           const FirstNonspace &fn) const {
+bool Parser::parse_code_block_prefix(const std::string &line,
+                                     ASTNode::Ptr container, size_t &offset,
+                                     size_t &column,
+                                     bool &partially_consumed_tab,
+                                     bool *should_continue,
+                                     const FirstNonspace &fn) const {
   if (!container)
     return false;
 
@@ -358,8 +327,8 @@ bool StreamParser::parse_code_block_prefix(const std::string &line,
   return false;
 }
 
-bool StreamParser::parse_html_block_prefix(ASTNode::Ptr container,
-                                           const FirstNonspace &fn) const {
+bool Parser::parse_html_block_prefix(ASTNode::Ptr container,
+                                     const FirstNonspace &fn) const {
   if (!container)
     return false;
 
@@ -386,8 +355,8 @@ bool StreamParser::parse_html_block_prefix(ASTNode::Ptr container,
 // Text accumulation
 // ============================================================================
 
-void StreamParser::add_line(const std::string &line, size_t offset,
-                            size_t column, bool partially_consumed_tab) {
+void Parser::add_line(const std::string &line, size_t offset, size_t column,
+                      bool partially_consumed_tab) {
   if (partially_consumed_tab) {
     offset += 1; // skip over tab
     // Add space characters
@@ -402,7 +371,7 @@ void StreamParser::add_line(const std::string &line, size_t offset,
   }
 }
 
-void StreamParser::chop_trailing_hashtags(std::string &line) const {
+void Parser::chop_trailing_hashtags(std::string &line) const {
   // Remove trailing spaces
   while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) {
     line.pop_back();
@@ -430,11 +399,10 @@ void StreamParser::chop_trailing_hashtags(std::string &line) const {
 // Core algorithm - Phase 1: Check open blocks
 // ============================================================================
 
-ASTNode::Ptr StreamParser::check_open_blocks(const std::string &line,
-                                             bool *all_matched, size_t &offset,
-                                             size_t &column,
-                                             bool &partially_consumed_tab,
-                                             size_t &thematic_break_kill_pos) {
+ASTNode::Ptr Parser::check_open_blocks(const std::string &line,
+                                       bool *all_matched, size_t &offset,
+                                       size_t &column,
+                                       bool &partially_consumed_tab) {
   bool should_continue = true;
   *all_matched = false;
   ASTNode::Ptr container = root_;
@@ -468,8 +436,7 @@ ASTNode::Ptr StreamParser::check_open_blocks(const std::string &line,
                                    fn))
         goto done;
       if (!should_continue) {
-        std::string empty_line;
-        container = finalize(container, 0, empty_line);
+        container = finalize(container);
         if (!container) {
           container = root_;
         }
@@ -514,18 +481,17 @@ done:
 // Core algorithm - Phase 2: Open new blocks
 // ============================================================================
 
-void StreamParser::open_new_blocks(ASTNode::Ptr *container,
-                                   const std::string &line, bool all_matched,
-                                   size_t &offset, size_t &column,
-                                   bool &partially_consumed_tab,
-                                   size_t &thematic_break_kill_pos) {
+void Parser::open_new_blocks(ASTNode::Ptr *container, const std::string &line,
+                             bool all_matched, size_t &offset, size_t &column,
+                             bool &partially_consumed_tab) {
   if (!*container)
     return;
 
   ASTNode::Ptr current_block = get_deepest_open_block();
   bool indented;
   ListMarkerInfo list_info{};
-  bool maybe_lazy = current_block && current_block->type() == NodeType::Paragraph;
+  bool maybe_lazy =
+      current_block && current_block->type() == NodeType::Paragraph;
   NodeType cont_type = (*container)->type();
   size_t matched = 0;
 
@@ -547,8 +513,7 @@ void StreamParser::open_new_blocks(ASTNode::Ptr *container,
                              static_cast<int>(blockquote_startpos + 1));
     }
     // ATX heading
-    else if (!indented &&
-             (matched = scan_atx_heading_start(line, fn.offset))) {
+    else if (!indented && (matched = scan_atx_heading_start(line, fn.offset))) {
       size_t heading_startpos = fn.offset;
 
       advance_offset(line, offset, column, fn.offset + matched - offset, false,
@@ -571,8 +536,8 @@ void StreamParser::open_new_blocks(ASTNode::Ptr *container,
 
         CodeData cdata{};
         cdata.fence_char = fence_info.fence_char;
-        cdata.fence_length =
-            static_cast<uint8_t>(std::min(fence_info.fence_length, size_t(255)));
+        cdata.fence_length = static_cast<uint8_t>(
+            std::min(fence_info.fence_length, size_t(255)));
         cdata.fence_offset = static_cast<uint8_t>(fn.offset - offset);
         cdata.info = fence_info.info;
         (*container)->set_data(cdata);
@@ -590,14 +555,15 @@ void StreamParser::open_new_blocks(ASTNode::Ptr *container,
             *container = add_child(*container, NodeType::HtmlBlock,
                                    static_cast<int>(fn.offset + 1));
             (*container)->set_data(static_cast<int>(html_type));
-            goto check_setext;
+            goto check_remaining_starts;
           }
         }
 
         // Setext heading
         char setext_char;
         if (cont_type == NodeType::Paragraph &&
-            (matched = scan_setext_heading_line(line, fn.offset, &setext_char))) {
+            (matched =
+                 scan_setext_heading_line(line, fn.offset, &setext_char))) {
           // Convert paragraph to setext heading
           // Note: We need to change the type of the container
           // Since we can't change type directly, we store content and
@@ -609,9 +575,10 @@ void StreamParser::open_new_blocks(ASTNode::Ptr *container,
           (*container)->unlink();
 
           // Create heading with the same content
-          ASTNode::Ptr heading = add_child(parent, NodeType::Heading,
-                                           (*container)->start_col());
-          heading->set_start((*container)->start_line(), (*container)->start_col());
+          ASTNode::Ptr heading =
+              add_child(parent, NodeType::Heading, (*container)->start_col());
+          heading->set_start((*container)->start_line(),
+                             (*container)->start_col());
 
           HeadingData hdata{};
           hdata.level = static_cast<uint8_t>(level);
@@ -627,20 +594,18 @@ void StreamParser::open_new_blocks(ASTNode::Ptr *container,
           goto after_block_checks;
         }
 
-      check_setext:
+      check_remaining_starts:
         // Thematic break
         char thematic_char;
-        if (!indented &&
-            !(cont_type == NodeType::Paragraph && !all_matched) &&
+        if (!indented && !(cont_type == NodeType::Paragraph && !all_matched) &&
             (matched = scan_thematic_break(line, fn.offset, &thematic_char))) {
           *container = add_child(*container, NodeType::ThematicBreak,
                                  static_cast<int>(fn.offset + 1));
           advance_offset(line, offset, column, line.size() - 1 - offset, false,
                          partially_consumed_tab);
         }
-        // List item
-        else if ((!indented || cont_type == NodeType::List) &&
-                 fn.indent < 4 &&
+        // List item (must start with 0-3 spaces of indentation)
+        else if (fn.indent < 4 &&
                  (matched = scan_list_marker(line, fn.offset, &list_info))) {
           // Check if list marker can interrupt paragraph
           bool interrupts_paragraph =
@@ -686,19 +651,6 @@ void StreamParser::open_new_blocks(ASTNode::Ptr *container,
           *container = add_child(*container, NodeType::Item,
                                  static_cast<int>(fn.offset + 1));
           (*container)->set_data(ldata);
-        }
-        // Indented code block
-        else if (indented && !maybe_lazy && !fn.blank) {
-          advance_offset(line, offset, column, CODE_INDENT, true,
-                         partially_consumed_tab);
-          *container = add_child(*container, NodeType::CodeBlock,
-                                 static_cast<int>(offset + 1));
-
-          CodeData cdata{};
-          cdata.fence_length = 0; // Not fenced
-          cdata.fence_char = 0;
-          cdata.fence_offset = 0;
-          (*container)->set_data(cdata);
         } else {
           goto after_block_checks;
         }
@@ -734,12 +686,11 @@ void StreamParser::open_new_blocks(ASTNode::Ptr *container,
 // Core algorithm - Phase 3: Add text to container
 // ============================================================================
 
-void StreamParser::add_text_to_container(ASTNode::Ptr container,
-                                         ASTNode::Ptr last_matched_container,
-                                         const std::string &line,
-                                         size_t &offset, size_t &column,
-                                         bool &partially_consumed_tab,
-                                         const FirstNonspace &fn) {
+void Parser::add_text_to_container(ASTNode::Ptr container,
+                                   ASTNode::Ptr last_matched_container,
+                                   const std::string &line, size_t &offset,
+                                   size_t &column, bool &partially_consumed_tab,
+                                   const FirstNonspace &fn) {
   if (fn.blank && container->last_child()) {
     container->last_child()->set_last_line_blank(true);
   }
@@ -766,14 +717,13 @@ void StreamParser::add_text_to_container(ASTNode::Ptr container,
   // Lazy continuation check
   ASTNode::Ptr current_block = get_deepest_open_block();
   if (current_block != last_matched_container &&
-      container == last_matched_container && !fn.blank &&
-      current_block && current_block->type() == NodeType::Paragraph) {
+      container == last_matched_container && !fn.blank && current_block &&
+      current_block->type() == NodeType::Paragraph) {
     add_line(line, offset, column, partially_consumed_tab);
   } else {
     // Finalize unmatched blocks
-    std::string empty_line;
     while (current_block && current_block != last_matched_container) {
-      current_block = finalize(current_block, 0, empty_line);
+      current_block = finalize(current_block);
     }
 
     NodeType container_type = container->type();
@@ -787,7 +737,7 @@ void StreamParser::add_text_to_container(ASTNode::Ptr container,
       if (html_type) {
         if (scan_html_block_end(line, fn.offset,
                                 static_cast<HtmlBlockType>(*html_type))) {
-          finalize(container, 0, empty_line);
+          finalize(container);
         }
       }
     } else if (fn.blank) {
@@ -811,8 +761,8 @@ void StreamParser::add_text_to_container(ASTNode::Ptr container,
       }
     } else {
       // Create paragraph container
-      container =
-          add_child(container, NodeType::Paragraph, static_cast<int>(fn.offset + 1));
+      container = add_child(container, NodeType::Paragraph,
+                            static_cast<int>(fn.offset + 1));
       advance_offset(line, offset, column, fn.offset - offset, false,
                      partially_consumed_tab);
       add_line(line, offset, column, partially_consumed_tab);
@@ -824,7 +774,7 @@ void StreamParser::add_text_to_container(ASTNode::Ptr container,
 // Main entry point
 // ============================================================================
 
-void StreamParser::parse_line(const std::string &line) {
+void Parser::parse_line(const std::string &line) {
   std::string curline = line;
 
   // Ensure line ends with newline
@@ -838,17 +788,16 @@ void StreamParser::parse_line(const std::string &line) {
   size_t offset = 0;
   size_t column = 0;
   bool partially_consumed_tab = false;
-  size_t thematic_break_kill_pos = 0;
 
   bool all_matched = true;
-  ASTNode::Ptr last_matched_container = check_open_blocks(
-      curline, &all_matched, offset, column, partially_consumed_tab,
-      thematic_break_kill_pos);
+  ASTNode::Ptr last_matched_container =
+      check_open_blocks(curline, &all_matched, offset, column,
+                        partially_consumed_tab);
 
   if (last_matched_container) {
     ASTNode::Ptr container = last_matched_container;
     open_new_blocks(&container, curline, all_matched, offset, column,
-                    partially_consumed_tab, thematic_break_kill_pos);
+                    partially_consumed_tab);
 
     FirstNonspace fn = find_first_nonspace(curline, offset, column);
     add_text_to_container(container, last_matched_container, curline, offset,
