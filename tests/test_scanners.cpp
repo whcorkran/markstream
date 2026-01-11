@@ -73,23 +73,23 @@ TEST(Indentation, NoIndent) {
 // ============================================================================
 
 TEST(BlankLine, Empty) {
-  EXPECT_TRUE(is_blank_line("", 0));
+  EXPECT_TRUE(scan_blank_line("", 0));
 }
 
 TEST(BlankLine, SpacesOnly) {
-  EXPECT_TRUE(is_blank_line("   ", 0));
-  EXPECT_TRUE(is_blank_line("\t\t", 0));
-  EXPECT_TRUE(is_blank_line("  \t  ", 0));
+  EXPECT_TRUE(scan_blank_line("   ", 0));
+  EXPECT_TRUE(scan_blank_line("\t\t", 0));
+  EXPECT_TRUE(scan_blank_line("  \t  ", 0));
 }
 
 TEST(BlankLine, WithContent) {
-  EXPECT_FALSE(is_blank_line("text", 0));
-  EXPECT_FALSE(is_blank_line("  text", 0));
+  EXPECT_FALSE(scan_blank_line("text", 0));
+  EXPECT_FALSE(scan_blank_line("  text", 0));
 }
 
 TEST(BlankLine, WithOffset) {
-  EXPECT_TRUE(is_blank_line("text   ", 4));
-  EXPECT_FALSE(is_blank_line("text   x", 4));
+  EXPECT_TRUE(scan_blank_line("text   ", 4));
+  EXPECT_FALSE(scan_blank_line("text   x", 4));
 }
 
 // ============================================================================

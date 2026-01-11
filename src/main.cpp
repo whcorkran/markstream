@@ -1,8 +1,6 @@
 #include <ast_node.hpp>
-#include <iostream>
 #include <parser.hpp>
-#include <stream_handlers.hpp>
-#include <streaming_parser.hpp>
+#include <streaming_session.hpp>
 #include <unistd.h>
 
 int main() {
@@ -18,5 +16,6 @@ int main() {
       parser.parse_line(line.value());
     }
   }
+
   return 0;
 }

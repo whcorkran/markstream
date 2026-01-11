@@ -38,6 +38,14 @@ inline char to_lower(char c) {
 size_t scan_indentation(const std::string &line, size_t offset,
                         size_t *out_columns);
 
+// Check if character at offset is escaped (preceded by odd number of
+// backslashes)
+size_t is_escaped(const std::string &line, size_t offset);
+
+// Escape aware character equality - returns true if target found AND not
+// escaped
+bool found_valid(char target, const std::string &line, size_t offset);
+
 } // namespace scan
 
 // HTML block types (CommonMark spec)
@@ -61,12 +69,12 @@ struct CodeFenceInfo {
 
 // List marker info
 struct ListMarkerInfo {
-  char marker_char;       // '-', '*', '+' for bullet; '.' or ')' for ordered
-  bool is_ordered;        // true for ordered lists
-  int start_number;       // Starting number for ordered lists (1-9 digits)
-  size_t marker_width;    // Total width of marker including trailing space
-  size_t content_offset;  // Offset where content begins after marker
-  size_t padding;         // Spaces after marker
+  char marker_char;      // '-', '*', '+' for bullet; '.' or ')' for ordered
+  bool is_ordered;       // true for ordered lists
+  int start_number;      // Starting number for ordered lists (1-9 digits)
+  size_t marker_width;   // Total width of marker including trailing space
+  size_t content_offset; // Offset where content begins after marker
+  size_t padding;        // Spaces after marker
 };
 
 // ATX Heading: 1-6 '#' followed by space/tab or end of line
@@ -77,8 +85,8 @@ size_t scan_atx_heading_start(const std::string &line, size_t offset);
 // Returns number of chars in closing sequence (for trimming)
 size_t scan_atx_heading_end(const std::string &line);
 
-// Setext heading underline: '=' or '-' (at least 1), optionally followed by spaces
-// Returns length matched, sets out_char to '=' or '-'
+// Setext heading underline: '=' or '-' (at least 1), optionally followed by
+// spaces Returns length matched, sets out_char to '=' or '-'
 size_t scan_setext_heading_line(const std::string &line, size_t offset,
                                 char *out_char);
 
@@ -120,7 +128,7 @@ bool scan_html_block_end(const std::string &line, size_t offset,
                          HtmlBlockType type);
 
 // Blank line detection
-bool is_blank_line(const std::string &line, size_t offset);
+bool scan_blank_line(const std::string &line, size_t offset);
 
 // Link reference definition (for future use)
 // Returns length matched or 0

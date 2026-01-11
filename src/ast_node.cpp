@@ -1,6 +1,7 @@
 #include "ast_node.hpp"
+#include <memory>
 ASTNode::Ptr ASTNode::create(NodeType type, int line, int col) {
-  return ASTNode::Ptr(new ASTNode(type, line, col));
+  return std::make_shared<ASTNode>(ConstructorKey{}, type, line, col);
 }
 
 void ASTNode::append_child(ASTNode::Ptr child) {
@@ -27,4 +28,28 @@ void ASTNode::unlink() {
   parent_.reset();
   prev_.reset();
   next_.reset();
+}
+
+// DFS tree traversal
+ASTIterator &ASTIterator::operator++() {
+  if (!current_)
+    return *this;
+
+  if (auto child = current_->first_child()) {
+    current_ = child.get();
+    return *this;
+  }
+
+  pointer temp = current_;
+  while (temp) {
+    if (auto next = temp->next()) {
+      current_ = next.get();
+      return *this;
+    }
+    auto parent = temp->parent();
+    temp = parent ? parent.get() : nullptr;
+  }
+
+  current_ = nullptr;
+  return *this;
 }

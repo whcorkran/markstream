@@ -2,7 +2,6 @@
 #define PARSER_H
 
 #include "ast_node.hpp"
-#include "scanners.hpp"
 #include <string>
 #include <unordered_map>
 

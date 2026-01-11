@@ -616,7 +616,7 @@ void Parser::open_new_blocks(ASTNode::Ptr *container, const std::string &line,
               goto after_block_checks;
             }
             // Empty list item can't interrupt paragraph
-            if (is_blank_line(line, fn.offset + matched)) {
+            if (scan_blank_line(line, fn.offset + matched)) {
               goto after_block_checks;
             }
           }
@@ -695,14 +695,14 @@ void Parser::add_text_to_container(ASTNode::Ptr container,
     container->last_child()->set_last_line_blank(true);
   }
 
-  NodeType ctype = container->type();
+  NodeType cont_type = container->type();
   const CodeData *code = container->get_data<CodeData>();
 
   bool is_blank_allowed =
-      (ctype != NodeType::BlockQuote && ctype != NodeType::Heading &&
-       ctype != NodeType::ThematicBreak &&
-       !(ctype == NodeType::CodeBlock && code && code->is_fenced()) &&
-       !(ctype == NodeType::Item && !container->first_child() &&
+      (cont_type != NodeType::BlockQuote && cont_type != NodeType::Heading &&
+       cont_type != NodeType::ThematicBreak &&
+       !(cont_type == NodeType::CodeBlock && code && code->is_fenced()) &&
+       !(cont_type == NodeType::Item && !container->first_child() &&
          container->start_line() == current_line_));
 
   container->set_last_line_blank(fn.blank && is_blank_allowed);
@@ -769,6 +769,11 @@ void Parser::add_text_to_container(ASTNode::Ptr container,
     }
   }
 }
+// ============================================================================
+// Point to closed blocks to be ready for rendering
+// ============================================================================
+
+ASTNode::Ptr render_ready_subtree(ASTNode::WeakPtr rppt) {}
 
 // ============================================================================
 // Main entry point
@@ -790,9 +795,8 @@ void Parser::parse_line(const std::string &line) {
   bool partially_consumed_tab = false;
 
   bool all_matched = true;
-  ASTNode::Ptr last_matched_container =
-      check_open_blocks(curline, &all_matched, offset, column,
-                        partially_consumed_tab);
+  ASTNode::Ptr last_matched_container = check_open_blocks(
+      curline, &all_matched, offset, column, partially_consumed_tab);
 
   if (last_matched_container) {
     ASTNode::Ptr container = last_matched_container;

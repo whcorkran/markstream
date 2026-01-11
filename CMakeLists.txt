@@ -34,8 +34,9 @@ FetchContent_MakeAvailable(cmark googletest)
 add_library(markstream_lib STATIC
         src/parser.cpp
         src/scanners.cpp
-        src/stream_handlers.cpp
+        src/io.cpp
         src/ast_node.cpp
+        src/html_renderer.cpp
 )
 
 target_include_directories(markstream_lib PUBLIC

@@ -20,12 +20,12 @@ enum class NodeType : uint8_t {
 
 // Block-specific metadata (only what varies per block type)
 struct ListData {
-  int start;           // Starting number (ordered lists)
-  int marker_offset;   // Indentation before marker
-  int padding;         // Spaces after marker (content indent)
-  char marker_char;    // '-', '*', '+' for bullet; '.' or ')' for ordered
-  bool is_ordered;     // true for ordered lists
-  bool is_tight;       // Tight vs loose list
+  int start;         // Starting number (ordered lists)
+  int marker_offset; // Indentation before marker
+  int padding;       // Spaces after marker (content indent)
+  char marker_char;  // '-', '*', '+' for bullet; '.' or ')' for ordered
+  bool is_ordered;   // true for ordered lists
+  bool is_tight;     // Tight vs loose list
 
   // Check if two lists match (for continuation)
   bool matches(const ListData &other) const {
@@ -52,6 +52,15 @@ enum NodeFlags : uint16_t { NODE_OPEN = 1 << 0, NODE_LAST_LINE_BLANK = 1 << 1 };
 
 class ASTNode : public std::enable_shared_from_this<ASTNode> {
 public:
+  // Only access the key from this class, effectively makes constructor private
+  struct ConstructorKey {
+    explicit ConstructorKey() = default;
+  };
+
+  ASTNode(ConstructorKey, NodeType type, int line, int col)
+      : type_(type), flags_(NODE_OPEN), start_line_(line), start_col_(col),
+        end_line_(0), end_col_(0) {}
+
   using Ptr = std::shared_ptr<ASTNode>;
   using WeakPtr = std::weak_ptr<ASTNode>;
   using Metadata =
@@ -104,10 +113,6 @@ public:
   template <typename T> void set_data(T &&d) { data_ = std::forward<T>(d); }
 
 private:
-  ASTNode(NodeType type, int line, int col)
-      : type_(type), flags_(NODE_OPEN), start_line_(line), start_col_(col),
-        end_line_(0), end_col_(0) {}
-
   NodeType type_;
   uint16_t flags_;
   int start_line_, start_col_, end_line_, end_col_;
@@ -119,6 +124,42 @@ private:
   WeakPtr prev_;
 
   Metadata data_;
+};
+
+// Iterator over tree
+class ASTIterator {
+public:
+  // STL tags
+  using iterator_category = std::forward_iterator_tag;
+  using value_type = const ASTNode;
+  using pointer = const ASTNode *;
+  using reference = const ASTNode &;
+
+  explicit ASTIterator(pointer node) : current_(node) {}
+  ASTIterator &operator++();
+  // Iterator operators
+  reference operator*() const { return *current_; }
+  pointer operator->() const { return current_; }
+
+  bool operator==(ASTIterator &other) const {
+    return current_ == other.current_;
+  }
+  bool operator!=(ASTIterator &other) const {
+    return current_ != other.current_;
+  }
+
+private:
+  pointer current_;
+};
+
+class ASTView {
+private:
+  ASTNode::Ptr root_;
+
+public:
+  ASTView(ASTNode::Ptr root) : root_(root) {};
+  ASTIterator begin() const { return ASTIterator(root_.get()); }
+  ASTIterator end() const { return ASTIterator(nullptr); }
 };
 
 #endif // AST_NODE_HPP

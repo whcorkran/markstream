@@ -1,8 +1,5 @@
 #include "scanners.hpp"
-#include <algorithm>
 #include <cstring>
-
-using namespace scan;
 
 // ============================================================================
 // Utility Functions
@@ -33,13 +30,27 @@ size_t scan_indentation(const std::string &line, size_t offset,
   return pos - offset;
 }
 
+size_t is_escaped(const std::string &line, size_t offset) {
+  if (offset == 0)
+    return false;
+  size_t pos = offset - 1;
+  size_t count = 0;
+  while (pos > 0 && line[--pos] == '\\') {
+    count++;
+  }
+  return (count % 2) != 0;
+}
+
+// Escape aware character equality
+bool found_valid(char target, const std::string &line, size_t offset) {
+  return line[offset] == target && !is_escaped(line, offset);
+}
+
 } // namespace scan
 
-// ============================================================================
-// Blank Line Detection
-// ============================================================================
+using namespace scan;
 
-bool is_blank_line(const std::string &line, size_t offset) {
+bool scan_blank_line(const std::string &line, size_t offset) {
   for (size_t i = offset; i < line.size(); i++) {
     if (!is_space(line[i]))
       return false;
@@ -52,7 +63,7 @@ bool is_blank_line(const std::string &line, size_t offset) {
 // ============================================================================
 
 size_t scan_atx_heading_start(const std::string &line, size_t offset) {
-  if (offset >= line.size() || line[offset] != '#')
+  if (offset >= line.size() || !found_valid('#', line, offset))
     return 0;
 
   size_t count = 0;
@@ -116,7 +127,7 @@ size_t scan_setext_heading_line(const std::string &line, size_t offset,
     return 0;
 
   char c = line[offset];
-  if (c != '=' && c != '-')
+  if (!found_valid('=', line, offset) && !found_valid('-', line, offset))
     return 0;
 
   size_t count = 0;
@@ -154,7 +165,7 @@ size_t scan_open_code_fence(const std::string &line, size_t offset,
     return 0;
 
   char fence_char = line[offset];
-  if (fence_char != '`' && fence_char != '~')
+  if (!found_valid('`', line, offset) && !found_valid('~', line, offset))
     return 0;
 
   size_t count = 0;
@@ -206,7 +217,7 @@ size_t scan_close_code_fence(const std::string &line, size_t offset,
   if (offset >= line.size())
     return 0;
 
-  if (line[offset] != fence_char)
+  if (!found_valid(fence_char, line, offset))
     return 0;
 
   size_t count = 0;
@@ -248,15 +259,15 @@ size_t scan_thematic_break(const std::string &line, size_t offset,
   while (pos < line.size()) {
     char c = line[pos];
 
-    if (c == '*' || c == '-' || c == '_') {
+    if ((c == '*' || c == '-' || c == '_') && found_valid(c, line, pos)) {
       if (delim == '\0') {
         delim = c;
       } else if (c != delim) {
         return 0; // Mixed delimiters not allowed
       }
       count++;
-    } else if (is_space_or_tab(c)) {
-      // Spaces and tabs are allowed between markers
+    } else if (is_space_or_tab(c) || c == '\\') {
+      // Spaces, tabs, and backslashes are allowed between markers
     } else {
       return 0; // Other characters not allowed
     }
@@ -280,7 +291,7 @@ size_t scan_block_quote_start(const std::string &line, size_t offset) {
   if (offset >= line.size())
     return 0;
 
-  if (line[offset] == '>') {
+  if (found_valid('>', line, offset)) {
     return 1;
   }
 
@@ -305,7 +316,8 @@ size_t scan_list_marker(const std::string &line, size_t offset,
   char c = line[pos];
 
   // Check for bullet marker
-  if (c == '-' || c == '*' || c == '+') {
+  if (found_valid('-', line, pos) || found_valid('*', line, pos) ||
+      found_valid('+', line, pos)) {
     marker_char = c;
     is_ordered = false;
     pos++;
@@ -325,7 +337,7 @@ size_t scan_list_marker(const std::string &line, size_t offset,
       return 0;
 
     // Must be followed by '.' or ')'
-    if (line[pos] == '.' || line[pos] == ')') {
+    if (found_valid('.', line, pos) || found_valid(')', line, pos)) {
       marker_char = line[pos];
       is_ordered = true;
       start_number = number;
@@ -375,7 +387,7 @@ size_t scan_list_marker(const std::string &line, size_t offset,
   size_t content_offset;
   size_t padding;
 
-  if (pos >= line.size() || is_blank_line(line, pos)) {
+  if (pos >= line.size() || scan_blank_line(line, pos)) {
     // Blank line after marker - use marker + 1 space
     padding = 1;
     content_offset = space_start + 1;
@@ -407,19 +419,17 @@ size_t scan_list_marker(const std::string &line, size_t offset,
 
 // HTML tag names for type 6 (block-level elements)
 static const char *html_block_tags[] = {
-    "address",    "article",    "aside",      "base",     "basefont",
-    "blockquote", "body",       "caption",    "center",   "col",
-    "colgroup",   "dd",         "details",    "dialog",   "dir",
-    "div",        "dl",         "dt",         "fieldset", "figcaption",
-    "figure",     "footer",     "form",       "frame",    "frameset",
-    "h1",         "h2",         "h3",         "h4",       "h5",
-    "h6",         "head",       "header",     "hr",       "html",
-    "iframe",     "legend",     "li",         "link",     "main",
-    "menu",       "menuitem",   "nav",        "noframes", "ol",
-    "optgroup",   "option",     "p",          "param",    "search",
-    "section",    "summary",    "table",      "tbody",    "td",
-    "tfoot",      "th",         "thead",      "title",    "tr",
-    "track",      "ul",         nullptr};
+    "address",  "article",    "aside",   "base",     "basefont", "blockquote",
+    "body",     "caption",    "center",  "col",      "colgroup", "dd",
+    "details",  "dialog",     "dir",     "div",      "dl",       "dt",
+    "fieldset", "figcaption", "figure",  "footer",   "form",     "frame",
+    "frameset", "h1",         "h2",      "h3",       "h4",       "h5",
+    "h6",       "head",       "header",  "hr",       "html",     "iframe",
+    "legend",   "li",         "link",    "main",     "menu",     "menuitem",
+    "nav",      "noframes",   "ol",      "optgroup", "option",   "p",
+    "param",    "search",     "section", "summary",  "table",    "tbody",
+    "td",       "tfoot",      "th",      "thead",    "title",    "tr",
+    "track",    "ul",         nullptr};
 
 // Case-insensitive tag name comparison
 static bool tag_matches(const std::string &line, size_t pos, const char *tag) {
@@ -458,7 +468,8 @@ static size_t scan_tag_name(const std::string &line, size_t pos) {
   size_t start = pos;
   pos++;
 
-  while (pos < line.size() && (is_alphanumeric(line[pos]) || line[pos] == '-')) {
+  while (pos < line.size() &&
+         (is_alphanumeric(line[pos]) || line[pos] == '-')) {
     pos++;
   }
 
@@ -492,7 +503,7 @@ static bool scan_closing_tag(const std::string &line, size_t pos,
 }
 
 HtmlBlockType scan_html_block_start(const std::string &line, size_t offset) {
-  if (offset >= line.size() || line[offset] != '<')
+  if (offset >= line.size() || !found_valid('<', line, offset))
     return HtmlBlockType::None;
 
   size_t pos = offset + 1;
@@ -509,8 +520,8 @@ HtmlBlockType scan_html_block_start(const std::string &line, size_t offset) {
   }
 
   // Type 4: <! followed by uppercase letter (declaration)
-  if (pos + 1 < line.size() && line[pos] == '!' &&
-      line[pos + 1] >= 'A' && line[pos + 1] <= 'Z') {
+  if (pos + 1 < line.size() && line[pos] == '!' && line[pos + 1] >= 'A' &&
+      line[pos + 1] <= 'Z') {
     return HtmlBlockType::Type4;
   }
 
@@ -547,7 +558,7 @@ HtmlBlockType scan_html_block_start(const std::string &line, size_t offset) {
 }
 
 bool scan_html_block_start_7(const std::string &line, size_t offset) {
-  if (offset >= line.size() || line[offset] != '<')
+  if (offset >= line.size() || !found_valid('<', line, offset))
     return false;
 
   size_t pos = offset + 1;
@@ -694,7 +705,7 @@ bool scan_html_block_end(const std::string &line, size_t offset,
   case HtmlBlockType::Type6:
   case HtmlBlockType::Type7:
     // Ends on blank line
-    return is_blank_line(line, offset);
+    return scan_blank_line(line, offset);
 
   case HtmlBlockType::None:
   default:
@@ -707,7 +718,7 @@ bool scan_html_block_end(const std::string &line, size_t offset,
 // ============================================================================
 
 size_t scan_link_label(const std::string &line, size_t offset) {
-  if (offset >= line.size() || line[offset] != '[')
+  if (offset >= line.size() || !found_valid('[', line, offset))
     return 0;
 
   size_t pos = offset + 1;
@@ -717,14 +728,14 @@ size_t scan_link_label(const std::string &line, size_t offset) {
   while (pos < line.size() && length < 1000) {
     char c = line[pos];
 
-    if (c == ']') {
+    if (found_valid(']', line, pos)) {
       if (has_non_space) {
         return pos - offset + 1;
       }
       return 0;
     }
 
-    if (c == '[')
+    if (found_valid('[', line, pos))
       return 0; // Nested brackets not allowed
 
     if (c == '\\' && pos + 1 < line.size()) {
