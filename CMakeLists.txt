@@ -36,6 +36,7 @@ add_library(markstream_lib STATIC
         src/scanners.cpp
         src/ast_node.cpp
         src/html_renderer.cpp
+        src/streaming_session.cpp
 )
 
 target_include_directories(markstream_lib PUBLIC

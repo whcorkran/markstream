@@ -25,9 +25,8 @@ std::string HtmlRenderer::escape_html(const std::string &text) {
   return result;
 }
 
-std::string HtmlRenderer::render() {
+std::string HtmlRenderer::render(ASTNode::Ptr root) {
   output_.clear();
-  ASTNode::Ptr root = parser_.get_root();
   if (root) {
     render_children(root);
   }
@@ -88,9 +87,9 @@ void HtmlRenderer::render_node(ASTNode::Ptr node) {
       while (child) {
         if (child->type() == NodeType::Paragraph) {
           // Render paragraph content without <p> tags
-          const std::string *text = parser_.get_node_text(child.get());
-          if (text) {
-            std::string content = *text;
+          const std::string &text = child->content();
+          if (!text.empty()) {
+            std::string content = text;
             // Trim trailing newline
             while (!content.empty() && content.back() == '\n') {
               content.pop_back();
@@ -114,7 +113,7 @@ void HtmlRenderer::render_node(ASTNode::Ptr node) {
 
   case NodeType::CodeBlock: {
     const CodeData *code = node->get_data<CodeData>();
-    const std::string *text = parser_.get_node_text(node.get());
+    const std::string &text = node->content();
 
     if (code && !code->info.empty()) {
       // Extract language (first word of info string)
@@ -128,8 +127,8 @@ void HtmlRenderer::render_node(ASTNode::Ptr node) {
       output_ += "<pre><code>";
     }
 
-    if (text) {
-      output_ += escape_html(*text);
+    if (!text.empty()) {
+      output_ += escape_html(text);
     }
     output_ += "</code></pre>\n";
     break;
@@ -142,9 +141,9 @@ void HtmlRenderer::render_node(ASTNode::Ptr node) {
 
     output_ += "<" + tag + ">";
 
-    const std::string *text = parser_.get_node_text(node.get());
-    if (text) {
-      std::string content = *text;
+    const std::string &text = node->content();
+    if (!text.empty()) {
+      std::string content = text;
       // Trim trailing newline
       while (!content.empty() && content.back() == '\n') {
         content.pop_back();
@@ -166,18 +165,18 @@ void HtmlRenderer::render_node(ASTNode::Ptr node) {
   }
 
   case NodeType::HtmlBlock: {
-    const std::string *text = parser_.get_node_text(node.get());
-    if (text) {
-      output_ += *text;
+    const std::string &text = node->content();
+    if (!text.empty()) {
+      output_ += text;
     }
     break;
   }
 
   case NodeType::Paragraph: {
     output_ += "<p>";
-    const std::string *text = parser_.get_node_text(node.get());
-    if (text) {
-      std::string content = *text;
+    const std::string &text = node->content();
+    if (!text.empty()) {
+      std::string content = text;
       // Trim trailing newline
       while (!content.empty() && content.back() == '\n') {
         content.pop_back();

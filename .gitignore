@@ -1,11 +1,13 @@
-cmark
 md_examples
-
+build
 _deps
+
 CMakeFiles
 CMakeCache.txt
 .vscode
 .cache
+.claude
 .cursor
 CLAUDE.md
 IMPLEMENTATION_PLAN.md
+session*.md

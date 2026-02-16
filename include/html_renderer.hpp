@@ -2,18 +2,16 @@
 #define HTML_RENDERER_HPP
 
 #include "ast_node.hpp"
-#include "parser.hpp"
 #include <string>
 
 // Simple HTML renderer for testing against CommonMark spec
 class HtmlRenderer {
 public:
-  explicit HtmlRenderer(const Parser &parser) : parser_(parser) {}
+  explicit HtmlRenderer() = default;
 
-  std::string render();
+  std::string render(ASTNode::Ptr root);
 
 private:
-  const Parser &parser_;
   std::string output_;
 
   void render_node(ASTNode::Ptr node);

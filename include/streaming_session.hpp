@@ -21,30 +21,28 @@ class LineBuffer {
 public:
   explicit LineBuffer(size_t max_buffer_size = 1024 * 1024);
 
-  // Feed data into buffer, normalizing \r\n -> \n
-  // Returns false if would exceed max_buffer_size
-  bool feed(std::string_view &data);
+  // Feed data into buffer. Returns true if data was accepted.
+  bool feed(std::string_view data);
 
-  // Extract and consume next complete line (including \n)
-  // Returns nullopt if no complete line available
+  // Extract and consume next complete line (without the \n).
+  // The returned string_view is valid until the next feed() or clear().
   std::optional<std::string_view> consume_line();
 
-  // Check if any data is buffered
-  bool has_data() const { return !buffer_.empty(); }
-
-  // Get remaining buffer content (for final flush)
+  // Return unconsumed data that doesn't yet form a complete line
   std::string_view remaining() const {
-    return std::string_view(buffer_.data() + pos, buffer_.size());
+    return std::string_view(buffer_.data() + pos_, buffer_.size() - pos_);
   }
 
-  // Clear all buffered data
-  void clear() { buffer_.clear(); }
+  void clear() {
+    buffer_.clear();
+    pos_ = 0;
+  }
 
-  size_t size() const { return buffer_.size(); }
+  size_t size() const { return buffer_.size() - pos_; }
 
 private:
   std::string buffer_;
-  size_t pos;
+  size_t pos_ = 0;
   size_t max_buffer_size_;
 };
 

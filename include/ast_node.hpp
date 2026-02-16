@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <variant>
 
 enum class NodeType : uint8_t {
@@ -112,6 +113,12 @@ public:
   }
   template <typename T> void set_data(T &&d) { data_ = std::forward<T>(d); }
 
+  // Text content (accumulated during parsing, read during rendering)
+  const std::string &content() const { return content_; }
+  void append_content(std::string_view text) { content_.append(text); }
+  void set_content(std::string &&text) { content_ = std::move(text); }
+  void clear_content() { content_.clear(); }
+
 private:
   NodeType type_;
   uint16_t flags_;
@@ -124,6 +131,7 @@ private:
   WeakPtr prev_;
 
   Metadata data_;
+  std::string content_;
 };
 
 // Iterator over tree

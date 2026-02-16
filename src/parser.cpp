@@ -6,10 +6,9 @@
 #define CODE_INDENT 4
 #define TAB_STOP 4
 
-Parser::Parser() {
+Parser::Parser() : current_line_(0) {
   root_ = ASTNode::create(NodeType::Document, 1, 1);
   root_->set_open(true);
-  current_line_ = 0;
 }
 
 // get the deepest open block, will always parent newly created blocks
@@ -160,30 +159,17 @@ ASTNode::Ptr Parser::finalize(ASTNode::Ptr b) {
   NodeType btype = b->type();
 
   switch (btype) {
-  case NodeType::Paragraph:
-  case NodeType::Heading:
-  case NodeType::HtmlBlock:
-    // Store accumulated content
-    if (!content_.empty()) {
-      text_storage_[b.get()] = std::move(content_);
-      content_.clear();
-    }
-    break;
-
   case NodeType::CodeBlock: {
     const CodeData *code = b->get_data<CodeData>();
     if (code && !code->is_fenced()) {
       // Indented code: remove trailing blank lines
-      while (!content_.empty() &&
-             (content_.back() == ' ' || content_.back() == '\t' ||
-              content_.back() == '\n' || content_.back() == '\r')) {
-        content_.pop_back();
+      std::string &text = const_cast<std::string &>(b->content());
+      while (!text.empty() &&
+             (text.back() == ' ' || text.back() == '\t' ||
+              text.back() == '\n' || text.back() == '\r')) {
+        text.pop_back();
       }
-      content_ += '\n';
-    }
-    if (!content_.empty()) {
-      text_storage_[b.get()] = std::move(content_);
-      content_.clear();
+      text += '\n';
     }
     break;
   }
@@ -353,19 +339,20 @@ bool Parser::parse_html_block_prefix(ASTNode::Ptr container,
 // Text accumulation
 // ============================================================================
 
-void Parser::add_line(const std::string &line, size_t offset, size_t column,
+void Parser::add_line(ASTNode::Ptr target, const std::string &line,
+                      size_t offset, size_t column,
                       bool partially_consumed_tab) {
   if (partially_consumed_tab) {
     offset += 1; // skip over tab
     // add space characters
     size_t chars_to_tab = TAB_STOP - (column % TAB_STOP);
     for (size_t i = 0; i < chars_to_tab; i++) {
-      content_ += ' ';
+      target->append_content(" ");
     }
   }
 
   if (offset < line.size()) {
-    content_ += line.substr(offset);
+    target->append_content(line.substr(offset));
   }
 }
 
@@ -476,6 +463,232 @@ done:
 }
 
 // ============================================================================
+// Core algorithm - Phase 2: New block starters
+// ============================================================================
+
+Parser::BlockStart Parser::try_block_quote(OpenBlockCtx &ctx) {
+  if (ctx.indented || peek_at(ctx.line, ctx.fn.offset) != '>')
+    return BlockStart::None;
+
+  size_t startpos = ctx.fn.offset;
+  advance_offset(ctx.line, ctx.offset, ctx.column,
+                 ctx.fn.offset + 1 - ctx.offset, false,
+                 ctx.partially_consumed_tab);
+  if (scan::is_space_or_tab(peek_at(ctx.line, ctx.offset))) {
+    advance_offset(ctx.line, ctx.offset, ctx.column, 1, true,
+                   ctx.partially_consumed_tab);
+  }
+  ctx.container =
+      add_child(ctx.container, NodeType::BlockQuote, static_cast<int>(startpos + 1));
+  return BlockStart::Found;
+}
+
+Parser::BlockStart Parser::try_atx_heading(OpenBlockCtx &ctx) {
+  if (ctx.indented)
+    return BlockStart::None;
+
+  size_t matched = scan_atx_heading_start(ctx.line, ctx.fn.offset);
+  if (!matched)
+    return BlockStart::None;
+
+  size_t startpos = ctx.fn.offset;
+  advance_offset(ctx.line, ctx.offset, ctx.column,
+                 ctx.fn.offset + matched - ctx.offset, false,
+                 ctx.partially_consumed_tab);
+  ctx.container = add_child(ctx.container, NodeType::Heading,
+                            static_cast<int>(startpos + 1));
+
+  HeadingData hdata{};
+  hdata.level = static_cast<uint8_t>(matched);
+  hdata.setext = false;
+  ctx.container->set_data(hdata);
+  return BlockStart::Leaf;
+}
+
+Parser::BlockStart Parser::try_code_fence(OpenBlockCtx &ctx) {
+  if (ctx.indented)
+    return BlockStart::None;
+
+  CodeFenceInfo fence_info{};
+  size_t matched = scan_open_code_fence(ctx.line, ctx.fn.offset, &fence_info);
+  if (!matched)
+    return BlockStart::None;
+
+  ctx.container = add_child(ctx.container, NodeType::CodeBlock,
+                            static_cast<int>(ctx.fn.offset + 1));
+
+  CodeData cdata{};
+  cdata.fence_char = fence_info.fence_char;
+  cdata.fence_length =
+      static_cast<uint8_t>(std::min(fence_info.fence_length, size_t(255)));
+  cdata.fence_offset = static_cast<uint8_t>(ctx.fn.offset - ctx.offset);
+  cdata.info = fence_info.info;
+  ctx.container->set_data(cdata);
+
+  // Advance past the entire opening fence line (info string is metadata, not content)
+  advance_offset(ctx.line, ctx.offset, ctx.column,
+                 ctx.line.size() - ctx.offset, false,
+                 ctx.partially_consumed_tab);
+  return BlockStart::Leaf;
+}
+
+Parser::BlockStart Parser::try_html_block(OpenBlockCtx &ctx) {
+  if (ctx.indented)
+    return BlockStart::None;
+
+  HtmlBlockType html_type = scan_html_block_start(ctx.line, ctx.fn.offset);
+  if (html_type == HtmlBlockType::None)
+    return BlockStart::None;
+
+  // Type 7 can't interrupt a paragraph
+  if (html_type == HtmlBlockType::Type7 && ctx.maybe_lazy)
+    return BlockStart::None;
+
+  ctx.container = add_child(ctx.container, NodeType::HtmlBlock,
+                            static_cast<int>(ctx.fn.offset + 1));
+  ctx.container->set_data(static_cast<int>(html_type));
+  return BlockStart::Leaf;
+}
+
+Parser::BlockStart Parser::try_setext_heading(OpenBlockCtx &ctx) {
+  if (ctx.indented)
+    return BlockStart::None;
+
+  NodeType cont_type = ctx.container->type();
+  if (cont_type != NodeType::Paragraph)
+    return BlockStart::None;
+
+  char setext_char;
+  size_t matched =
+      scan_setext_heading_line(ctx.line, ctx.fn.offset, &setext_char);
+  if (!matched)
+    return BlockStart::None;
+
+  // Convert paragraph to setext heading
+  ASTNode::Ptr parent = ctx.container->parent();
+  int level = (setext_char == '=') ? 1 : 2;
+
+  // Save content and position from paragraph before unlinking
+  std::string para_content = std::move(const_cast<std::string &>(ctx.container->content()));
+  int start_line = ctx.container->start_line();
+  int start_col = ctx.container->start_col();
+
+  ctx.container->unlink();
+
+  // Create heading with the paragraph's content
+  ASTNode::Ptr heading =
+      add_child(parent, NodeType::Heading, start_col);
+  heading->set_start(start_line, start_col);
+  heading->set_content(std::move(para_content));
+
+  HeadingData hdata{};
+  hdata.level = static_cast<uint8_t>(level);
+  hdata.setext = true;
+  heading->set_data(hdata);
+
+  ctx.container = heading;
+  advance_offset(ctx.line, ctx.offset, ctx.column,
+                 ctx.line.size() - 1 - ctx.offset, false,
+                 ctx.partially_consumed_tab);
+  return BlockStart::Leaf;
+}
+
+Parser::BlockStart Parser::try_thematic_break(OpenBlockCtx &ctx) {
+  if (ctx.indented)
+    return BlockStart::None;
+
+  // Thematic break cannot interrupt an unmatched paragraph
+  NodeType cont_type = ctx.container->type();
+  if (cont_type == NodeType::Paragraph && !ctx.all_matched)
+    return BlockStart::None;
+
+  char thematic_char;
+  size_t matched =
+      scan_thematic_break(ctx.line, ctx.fn.offset, &thematic_char);
+  if (!matched)
+    return BlockStart::None;
+
+  ctx.container = add_child(ctx.container, NodeType::ThematicBreak,
+                            static_cast<int>(ctx.fn.offset + 1));
+  advance_offset(ctx.line, ctx.offset, ctx.column,
+                 ctx.line.size() - 1 - ctx.offset, false,
+                 ctx.partially_consumed_tab);
+  return BlockStart::Leaf;
+}
+
+Parser::BlockStart Parser::try_list_item(OpenBlockCtx &ctx) {
+  if (ctx.fn.indent >= CODE_INDENT)
+    return BlockStart::None;
+
+  ListMarkerInfo list_info{};
+  size_t matched = scan_list_marker(ctx.line, ctx.fn.offset, &list_info);
+  if (!matched)
+    return BlockStart::None;
+
+  // Check if list marker can interrupt paragraph
+  bool interrupts_paragraph = ctx.container->type() == NodeType::Paragraph;
+  if (interrupts_paragraph) {
+    // Ordered list starting != 1 can't interrupt paragraph
+    if (list_info.is_ordered && list_info.start_number != 1)
+      return BlockStart::None;
+    // Empty list item can't interrupt paragraph
+    if (scan_blank_line(ctx.line, ctx.fn.offset + matched))
+      return BlockStart::None;
+  }
+
+  advance_offset(ctx.line, ctx.offset, ctx.column,
+                 ctx.fn.offset + matched - ctx.offset, false,
+                 ctx.partially_consumed_tab);
+
+  // Create list data
+  ListData ldata{};
+  ldata.marker_char = list_info.marker_char;
+  ldata.is_ordered = list_info.is_ordered;
+  ldata.start = list_info.start_number;
+  ldata.marker_offset = ctx.fn.indent;
+  ldata.padding = static_cast<int>(list_info.padding);
+  ldata.is_tight = true;
+
+  // Check if we need a new list or can continue existing
+  NodeType cont_type = ctx.container->type();
+  if (cont_type != NodeType::List) {
+    ctx.container = add_child(ctx.container, NodeType::List,
+                              static_cast<int>(ctx.fn.offset + 1));
+    ctx.container->set_data(ldata);
+  } else {
+    const ListData *existing = ctx.container->get_data<ListData>();
+    if (!existing || !ldata.matches(*existing)) {
+      ctx.container = add_child(ctx.container, NodeType::List,
+                                static_cast<int>(ctx.fn.offset + 1));
+      ctx.container->set_data(ldata);
+    }
+  }
+
+  // Add list item
+  ctx.container = add_child(ctx.container, NodeType::Item,
+                            static_cast<int>(ctx.fn.offset + 1));
+  ctx.container->set_data(ldata);
+  return BlockStart::Found;
+}
+
+Parser::BlockStart Parser::try_indented_code(OpenBlockCtx &ctx) {
+  if (!ctx.indented || ctx.maybe_lazy || ctx.fn.blank)
+    return BlockStart::None;
+
+  advance_offset(ctx.line, ctx.offset, ctx.column, CODE_INDENT, true,
+                 ctx.partially_consumed_tab);
+  ctx.container = add_child(ctx.container, NodeType::CodeBlock,
+                            static_cast<int>(ctx.offset + 1));
+
+  CodeData cdata{};
+  cdata.fence_length = 0;
+  cdata.fence_char = 0;
+  cdata.fence_offset = 0;
+  ctx.container->set_data(cdata);
+  return BlockStart::Leaf;
+}
+
+// ============================================================================
 // Core algorithm - Phase 2: Open new blocks
 // ============================================================================
 
@@ -486,198 +699,39 @@ void Parser::open_new_blocks(ASTNode::Ptr *container, const std::string &line,
     return;
 
   ASTNode::Ptr current_block = get_deepest_open_block();
-  bool indented;
-  ListMarkerInfo list_info{};
   bool maybe_lazy =
       current_block && current_block->type() == NodeType::Paragraph;
-  NodeType cont_type = (*container)->type();
-  size_t matched = 0;
 
-  while (cont_type != NodeType::CodeBlock && cont_type != NodeType::HtmlBlock) {
+  while ((*container)->type() != NodeType::CodeBlock &&
+         (*container)->type() != NodeType::HtmlBlock) {
     FirstNonspace fn = find_first_nonspace(line, offset, column);
-    indented = fn.indent >= CODE_INDENT;
 
-    // Block quote
-    if (!indented && peek_at(line, fn.offset) == '>') {
-      size_t blockquote_startpos = fn.offset;
+    OpenBlockCtx ctx{*container,   line,
+                     offset,       column,
+                     partially_consumed_tab, fn,
+                     fn.indent >= CODE_INDENT, maybe_lazy,
+                     all_matched};
 
-      advance_offset(line, offset, column, fn.offset + 1 - offset, false,
-                     partially_consumed_tab);
-      if (scan::is_space_or_tab(peek_at(line, offset))) {
-        advance_offset(line, offset, column, 1, true, partially_consumed_tab);
-      }
-
-      *container = add_child(*container, NodeType::BlockQuote,
-                             static_cast<int>(blockquote_startpos + 1));
-    }
-    // ATX heading
-    else if (!indented && (matched = scan_atx_heading_start(line, fn.offset))) {
-      size_t heading_startpos = fn.offset;
-
-      advance_offset(line, offset, column, fn.offset + matched - offset, false,
-                     partially_consumed_tab);
-      *container = add_child(*container, NodeType::Heading,
-                             static_cast<int>(heading_startpos + 1));
-
-      HeadingData hdata{};
-      hdata.level = static_cast<uint8_t>(matched);
-      hdata.setext = false;
-      (*container)->set_data(hdata);
-    }
-    // Fenced code block
-    else if (!indented) {
-      CodeFenceInfo fence_info{};
-      matched = scan_open_code_fence(line, fn.offset, &fence_info);
-      if (matched) {
-        *container = add_child(*container, NodeType::CodeBlock,
-                               static_cast<int>(fn.offset + 1));
-
-        CodeData cdata{};
-        cdata.fence_char = fence_info.fence_char;
-        cdata.fence_length = static_cast<uint8_t>(
-            std::min(fence_info.fence_length, size_t(255)));
-        cdata.fence_offset = static_cast<uint8_t>(fn.offset - offset);
-        cdata.info = fence_info.info;
-        (*container)->set_data(cdata);
-
-        advance_offset(line, offset, column, fn.offset + matched - offset,
-                       false, partially_consumed_tab);
-      } else {
-        // HTML block
-        HtmlBlockType html_type = scan_html_block_start(line, fn.offset);
-        if (html_type != HtmlBlockType::None) {
-          // Type 7 can't interrupt a paragraph
-          if (html_type == HtmlBlockType::Type7 && maybe_lazy) {
-            // Skip
-          } else {
-            *container = add_child(*container, NodeType::HtmlBlock,
-                                   static_cast<int>(fn.offset + 1));
-            (*container)->set_data(static_cast<int>(html_type));
-            goto check_remaining_starts;
-          }
-        }
-
-        // Setext heading
-        char setext_char;
-        if (cont_type == NodeType::Paragraph &&
-            (matched =
-                 scan_setext_heading_line(line, fn.offset, &setext_char))) {
-          // Convert paragraph to setext heading
-          // NOTE: We need to change the type of the container
-          // Since we can't change type directly, we store content and
-          // recreate.  Setext headings are super rare so such reallocations are
-          // uncommon
-          ASTNode::Ptr parent = (*container)->parent();
-          int level = (setext_char == '=') ? 1 : 2;
-
-          // Unlink the paragraph
-          (*container)->unlink();
-
-          // Create heading with the same content
-          ASTNode::Ptr heading =
-              add_child(parent, NodeType::Heading, (*container)->start_col());
-          heading->set_start((*container)->start_line(),
-                             (*container)->start_col());
-
-          HeadingData hdata{};
-          hdata.level = static_cast<uint8_t>(level);
-          hdata.setext = true;
-          heading->set_data(hdata);
-
-          // Move text from old container - content_ has accumulated text
-          // The content was being accumulated in content_ for the paragraph
-
-          *container = heading;
-          advance_offset(line, offset, column, line.size() - 1 - offset, false,
-                         partially_consumed_tab);
-          goto after_block_checks;
-        }
-
-      check_remaining_starts:
-        // Thematic break
-        char thematic_char;
-        if (!indented && !(cont_type == NodeType::Paragraph && !all_matched) &&
-            (matched = scan_thematic_break(line, fn.offset, &thematic_char))) {
-          *container = add_child(*container, NodeType::ThematicBreak,
-                                 static_cast<int>(fn.offset + 1));
-          advance_offset(line, offset, column, line.size() - 1 - offset, false,
-                         partially_consumed_tab);
-        }
-        // List item (must start with 0-3 spaces of indentation)
-        else if (fn.indent < 4 &&
-                 (matched = scan_list_marker(line, fn.offset, &list_info))) {
-          // Check if list marker can interrupt paragraph
-          bool interrupts_paragraph =
-              (*container)->type() == NodeType::Paragraph;
-          if (interrupts_paragraph) {
-            // Ordered list starting != 1 can't interrupt paragraph
-            if (list_info.is_ordered && list_info.start_number != 1) {
-              goto after_block_checks;
-            }
-            // Empty list item can't interrupt paragraph
-            if (scan_blank_line(line, fn.offset + matched)) {
-              goto after_block_checks;
-            }
-          }
-
-          advance_offset(line, offset, column, fn.offset + matched - offset,
-                         false, partially_consumed_tab);
-
-          // Create list data
-          ListData ldata{};
-          ldata.marker_char = list_info.marker_char;
-          ldata.is_ordered = list_info.is_ordered;
-          ldata.start = list_info.start_number;
-          ldata.marker_offset = fn.indent;
-          ldata.padding = static_cast<int>(list_info.padding);
-          ldata.is_tight = true;
-
-          // Check if we need a new list or can continue existing
-          if (cont_type != NodeType::List) {
-            *container = add_child(*container, NodeType::List,
-                                   static_cast<int>(fn.offset + 1));
-            (*container)->set_data(ldata);
-          } else {
-            const ListData *existing = (*container)->get_data<ListData>();
-            if (!existing || !ldata.matches(*existing)) {
-              *container = add_child(*container, NodeType::List,
-                                     static_cast<int>(fn.offset + 1));
-              (*container)->set_data(ldata);
-            }
-          }
-
-          // Add list item
-          *container = add_child(*container, NodeType::Item,
-                                 static_cast<int>(fn.offset + 1));
-          (*container)->set_data(ldata);
-        } else {
-          goto after_block_checks;
-        }
-      }
-    }
-    // Indented code (when line starts indented)
-    else if (indented && !maybe_lazy && !fn.blank) {
-      advance_offset(line, offset, column, CODE_INDENT, true,
-                     partially_consumed_tab);
-      *container = add_child(*container, NodeType::CodeBlock,
-                             static_cast<int>(offset + 1));
-
-      CodeData cdata{};
-      cdata.fence_length = 0;
-      cdata.fence_char = 0;
-      cdata.fence_offset = 0;
-      (*container)->set_data(cdata);
-    } else {
-      break;
+    // Try each block starter in priority order
+    BlockStart result;
+    if ((result = try_block_quote(ctx)) != BlockStart::None ||
+        (result = try_atx_heading(ctx)) != BlockStart::None ||
+        (result = try_code_fence(ctx)) != BlockStart::None ||
+        (result = try_html_block(ctx)) != BlockStart::None ||
+        (result = try_setext_heading(ctx)) != BlockStart::None ||
+        (result = try_thematic_break(ctx)) != BlockStart::None ||
+        (result = try_list_item(ctx)) != BlockStart::None ||
+        (result = try_indented_code(ctx)) != BlockStart::None) {
+      // Leaf blocks accept lines — done opening blocks
+      if (result == BlockStart::Leaf || accepts_lines((*container)->type()))
+        break;
+      // Found a container block — loop to check for nested blocks
+      maybe_lazy = false;
+      continue;
     }
 
-  after_block_checks:
-    if (*container && accepts_lines((*container)->type())) {
-      break;
-    }
-
-    cont_type = (*container)->type();
-    maybe_lazy = false;
+    // Nothing matched
+    break;
   }
 }
 
@@ -687,6 +741,7 @@ void Parser::open_new_blocks(ASTNode::Ptr *container, const std::string &line,
 
 void Parser::add_text_to_container(ASTNode::Ptr container,
                                    ASTNode::Ptr last_matched_container,
+                                   ASTNode::Ptr deepest_before_new,
                                    const std::string &line, size_t &offset,
                                    size_t &column, bool &partially_consumed_tab,
                                    const FirstNonspace &fn) {
@@ -713,23 +768,26 @@ void Parser::add_text_to_container(ASTNode::Ptr container,
     tmp = tmp->parent();
   }
 
-  // Lazy continuation check
-  ASTNode::Ptr current_block = get_deepest_open_block();
-  if (current_block != last_matched_container &&
-      container == last_matched_container && !fn.blank && current_block &&
-      current_block->type() == NodeType::Paragraph) {
-    add_line(line, offset, column, partially_consumed_tab);
+  // Lazy continuation check: if the deepest open block (from before phase 2)
+  // was a paragraph that wasn't matched, and no new blocks were opened,
+  // the line lazily continues the paragraph.
+  if (deepest_before_new != last_matched_container &&
+      container == last_matched_container && !fn.blank &&
+      deepest_before_new &&
+      deepest_before_new->type() == NodeType::Paragraph) {
+    add_line(deepest_before_new, line, offset, column, partially_consumed_tab);
   } else {
-    // Finalize unmatched blocks
+    // Finalize unmatched blocks (from phase 1) that are still open
+    ASTNode::Ptr current_block = deepest_before_new;
     while (current_block && current_block != last_matched_container) {
       current_block = finalize(current_block);
     }
 
     NodeType container_type = container->type();
     if (container_type == NodeType::CodeBlock) {
-      add_line(line, offset, column, partially_consumed_tab);
+      add_line(container, line, offset, column, partially_consumed_tab);
     } else if (container_type == NodeType::HtmlBlock) {
-      add_line(line, offset, column, partially_consumed_tab);
+      add_line(container, line, offset, column, partially_consumed_tab);
 
       // Check for HTML block end
       const int *html_type = container->get_data<int>();
@@ -747,16 +805,11 @@ void Parser::add_text_to_container(ASTNode::Ptr container,
         // ATX heading - chop trailing hashtags
         std::string line_copy = line;
         chop_trailing_hashtags(line_copy);
-        size_t temp_offset = fn.offset;
-        size_t temp_column = fn.column;
-        bool temp_partial = false;
-        advance_offset(line_copy, temp_offset, temp_column, fn.offset - offset,
-                       false, temp_partial);
-        add_line(line_copy, temp_offset, temp_column, temp_partial);
+        add_line(container, line_copy, fn.offset, fn.column, false);
       } else {
         advance_offset(line, offset, column, fn.offset - offset, false,
                        partially_consumed_tab);
-        add_line(line, offset, column, partially_consumed_tab);
+        add_line(container, line, offset, column, partially_consumed_tab);
       }
     } else {
       // Create paragraph container
@@ -764,16 +817,10 @@ void Parser::add_text_to_container(ASTNode::Ptr container,
                             static_cast<int>(fn.offset + 1));
       advance_offset(line, offset, column, fn.offset - offset, false,
                      partially_consumed_tab);
-      add_line(line, offset, column, partially_consumed_tab);
+      add_line(container, line, offset, column, partially_consumed_tab);
     }
   }
 }
-// ============================================================================
-// Point to closed blocks to be ready for rendering
-// ============================================================================
-
-ASTNode::Ptr render_ready_subtree(ASTNode::WeakPtr rppt) {}
-
 // ============================================================================
 // Main entry point
 // ============================================================================
@@ -798,12 +845,17 @@ void Parser::parse_line(const std::string &line) {
       curline, &all_matched, offset, column, partially_consumed_tab);
 
   if (last_matched_container) {
+    // Save the deepest open block before phase 2 creates new blocks.
+    // Phase 3 needs this to finalize unmatched blocks correctly.
+    ASTNode::Ptr deepest_before_new = get_deepest_open_block();
+
     ASTNode::Ptr container = last_matched_container;
     open_new_blocks(&container, curline, all_matched, offset, column,
                     partially_consumed_tab);
 
     FirstNonspace fn = find_first_nonspace(curline, offset, column);
-    add_text_to_container(container, last_matched_container, curline, offset,
-                          column, partially_consumed_tab, fn);
+    add_text_to_container(container, last_matched_container,
+                          deepest_before_new, curline, offset, column,
+                          partially_consumed_tab, fn);
   }
 }

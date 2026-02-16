@@ -143,8 +143,10 @@ size_t scan_setext_heading_line(const std::string &line, size_t offset,
   if (count == 0)
     return 0;
 
-  // Rest of line must be blank (spaces/tabs only)
+  // Rest of line must be blank (spaces/tabs/line endings only)
   while (pos < line.size()) {
+    if (is_line_end(line[pos]))
+      break;
     if (!is_space_or_tab(line[pos]))
       return 0;
     pos++;
@@ -259,7 +261,9 @@ size_t scan_thematic_break(const std::string &line, size_t offset,
   while (pos < line.size()) {
     char c = line[pos];
 
-    if ((c == '*' || c == '-' || c == '_') && found_valid(c, line, pos)) {
+    if (is_line_end(c)) {
+      break; // Stop at line ending
+    } else if ((c == '*' || c == '-' || c == '_') && found_valid(c, line, pos)) {
       if (delim == '\0') {
         delim = c;
       } else if (c != delim) {
