@@ -6,7 +6,6 @@
 #define CODE_INDENT 4
 #define TAB_STOP 4
 
-// Constructor
 Parser::Parser() {
   root_ = ASTNode::create(NodeType::Document, 1, 1);
   root_->set_open(true);
@@ -26,17 +25,16 @@ ASTNode::Ptr Parser::get_deepest_open_block() const {
   return current;
 }
 
-// Check if document has no open nested blocks (only root may be open)
+// check if document has no open nested blocks
 bool Parser::is_complete() const {
   if (!root_->is_open()) {
     return true;
   }
-  // Document is open - check if there are any open children
   ASTNode::Ptr last = root_->last_child();
   return !last || !last->is_open();
 }
 
-// Line processing helpers
+// line processing helpers
 char Parser::peek_at(const std::string &input, size_t pos) const {
   if (pos >= input.size())
     return '\0';
@@ -104,7 +102,7 @@ void Parser::advance_offset(const std::string &line, size_t &offset,
 }
 
 // ============================================================================
-// Block type checks
+// Block type checks for later logic
 // ============================================================================
 
 bool Parser::can_contain(NodeType parent_type, NodeType child_type) const {
@@ -155,7 +153,7 @@ ASTNode::Ptr Parser::finalize(ASTNode::Ptr b) {
 
   b->set_open(false);
 
-  // Set end position to previous line (block ended before current line)
+  // set end position to previous line (block ended before current line)
   b->set_end(current_line_ > 0 ? current_line_ - 1 : 0, 0);
 
   // Process content based on block type
@@ -290,7 +288,7 @@ bool Parser::parse_code_block_prefix(const std::string &line,
   *should_continue = true;
 
   if (!code->is_fenced()) {
-    // Indented code
+    // indented code
     if (fn.indent >= CODE_INDENT) {
       advance_offset(line, offset, column, CODE_INDENT, true,
                      partially_consumed_tab);
@@ -301,7 +299,7 @@ bool Parser::parse_code_block_prefix(const std::string &line,
       return true;
     }
   } else {
-    // Fenced code
+    // fenced code
     size_t matched = 0;
     if (fn.indent <= 3 && peek_at(line, fn.offset) == code->fence_char) {
       matched = scan_close_code_fence(line, fn.offset, code->fence_char,
@@ -309,13 +307,13 @@ bool Parser::parse_code_block_prefix(const std::string &line,
     }
 
     if (matched >= code->fence_length) {
-      // Closing fence
+      // closing fence
       *should_continue = false;
       advance_offset(line, offset, column, matched, false,
                      partially_consumed_tab);
       return true;
     } else {
-      // Skip optional spaces of fence offset
+      // skip optional spaces of fence offset
       int i = code->fence_offset;
       while (i > 0 && scan::is_space_or_tab(peek_at(line, offset))) {
         advance_offset(line, offset, column, 1, true, partially_consumed_tab);
@@ -359,7 +357,7 @@ void Parser::add_line(const std::string &line, size_t offset, size_t column,
                       bool partially_consumed_tab) {
   if (partially_consumed_tab) {
     offset += 1; // skip over tab
-    // Add space characters
+    // add space characters
     size_t chars_to_tab = TAB_STOP - (column % TAB_STOP);
     for (size_t i = 0; i < chars_to_tab; i++) {
       content_ += ' ';
@@ -380,12 +378,12 @@ void Parser::chop_trailing_hashtags(std::string &line) const {
   size_t orig_n = line.size();
   size_t n = orig_n;
 
-  // Remove trailing #s
+  // Remove trailing #
   while (n > 0 && line[n - 1] == '#') {
     n--;
   }
 
-  // Check for space before the final #s
+  // Check for space before the final #
   if (n != orig_n && n > 0 && scan::is_space_or_tab(line[n - 1])) {
     line.erase(n - 1);
     // Remove trailing spaces again
@@ -421,7 +419,7 @@ ASTNode::Ptr Parser::check_open_blocks(const std::string &line,
       break;
 
     case NodeType::List:
-      // Lists don't have special continuation - items do
+      // lists don't have special continuation - items do
       break;
 
     case NodeType::Item:
@@ -440,12 +438,12 @@ ASTNode::Ptr Parser::check_open_blocks(const std::string &line,
         if (!container) {
           container = root_;
         }
-        return nullptr; // Signal stop
+        return nullptr; // null signals stop
       }
       break;
 
     case NodeType::Heading:
-      // Heading can never contain more than one line
+      // heading can never contain more than one line
       goto done;
 
     case NodeType::HtmlBlock:
@@ -565,9 +563,10 @@ void Parser::open_new_blocks(ASTNode::Ptr *container, const std::string &line,
             (matched =
                  scan_setext_heading_line(line, fn.offset, &setext_char))) {
           // Convert paragraph to setext heading
-          // Note: We need to change the type of the container
+          // NOTE: We need to change the type of the container
           // Since we can't change type directly, we store content and
-          // recreate
+          // recreate.  Setext headings are super rare so such reallocations are
+          // uncommon
           ASTNode::Ptr parent = (*container)->parent();
           int level = (setext_char == '=') ? 1 : 2;
 

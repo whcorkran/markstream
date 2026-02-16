@@ -4,7 +4,6 @@ md_examples
 _deps
 CMakeFiles
 CMakeCache.txt
-build
 .vscode
 .cache
 .cursor
