@@ -164,9 +164,8 @@ ASTNode::Ptr Parser::finalize(ASTNode::Ptr b) {
     if (code && !code->is_fenced()) {
       // Indented code: remove trailing blank lines
       std::string &text = const_cast<std::string &>(b->content());
-      while (!text.empty() &&
-             (text.back() == ' ' || text.back() == '\t' ||
-              text.back() == '\n' || text.back() == '\r')) {
+      while (!text.empty() && (text.back() == ' ' || text.back() == '\t' ||
+                               text.back() == '\n' || text.back() == '\r')) {
         text.pop_back();
       }
       text += '\n';
@@ -478,8 +477,8 @@ Parser::BlockStart Parser::try_block_quote(OpenBlockCtx &ctx) {
     advance_offset(ctx.line, ctx.offset, ctx.column, 1, true,
                    ctx.partially_consumed_tab);
   }
-  ctx.container =
-      add_child(ctx.container, NodeType::BlockQuote, static_cast<int>(startpos + 1));
+  ctx.container = add_child(ctx.container, NodeType::BlockQuote,
+                            static_cast<int>(startpos + 1));
   return BlockStart::Found;
 }
 
@@ -525,10 +524,10 @@ Parser::BlockStart Parser::try_code_fence(OpenBlockCtx &ctx) {
   cdata.info = fence_info.info;
   ctx.container->set_data(cdata);
 
-  // Advance past the entire opening fence line (info string is metadata, not content)
-  advance_offset(ctx.line, ctx.offset, ctx.column,
-                 ctx.line.size() - ctx.offset, false,
-                 ctx.partially_consumed_tab);
+  // Advance past the entire opening fence line (info string is metadata, not
+  // content)
+  advance_offset(ctx.line, ctx.offset, ctx.column, ctx.line.size() - ctx.offset,
+                 false, ctx.partially_consumed_tab);
   return BlockStart::Leaf;
 }
 
@@ -569,15 +568,15 @@ Parser::BlockStart Parser::try_setext_heading(OpenBlockCtx &ctx) {
   int level = (setext_char == '=') ? 1 : 2;
 
   // Save content and position from paragraph before unlinking
-  std::string para_content = std::move(const_cast<std::string &>(ctx.container->content()));
+  std::string para_content =
+      std::move(const_cast<std::string &>(ctx.container->content()));
   int start_line = ctx.container->start_line();
   int start_col = ctx.container->start_col();
 
   ctx.container->unlink();
 
   // Create heading with the paragraph's content
-  ASTNode::Ptr heading =
-      add_child(parent, NodeType::Heading, start_col);
+  ASTNode::Ptr heading = add_child(parent, NodeType::Heading, start_col);
   heading->set_start(start_line, start_col);
   heading->set_content(std::move(para_content));
 
@@ -603,8 +602,7 @@ Parser::BlockStart Parser::try_thematic_break(OpenBlockCtx &ctx) {
     return BlockStart::None;
 
   char thematic_char;
-  size_t matched =
-      scan_thematic_break(ctx.line, ctx.fn.offset, &thematic_char);
+  size_t matched = scan_thematic_break(ctx.line, ctx.fn.offset, &thematic_char);
   if (!matched)
     return BlockStart::None;
 
@@ -706,10 +704,14 @@ void Parser::open_new_blocks(ASTNode::Ptr *container, const std::string &line,
          (*container)->type() != NodeType::HtmlBlock) {
     FirstNonspace fn = find_first_nonspace(line, offset, column);
 
-    OpenBlockCtx ctx{*container,   line,
-                     offset,       column,
-                     partially_consumed_tab, fn,
-                     fn.indent >= CODE_INDENT, maybe_lazy,
+    OpenBlockCtx ctx{*container,
+                     line,
+                     offset,
+                     column,
+                     partially_consumed_tab,
+                     fn,
+                     fn.indent >= CODE_INDENT,
+                     maybe_lazy,
                      all_matched};
 
     // Try each block starter in priority order
@@ -772,8 +774,7 @@ void Parser::add_text_to_container(ASTNode::Ptr container,
   // was a paragraph that wasn't matched, and no new blocks were opened,
   // the line lazily continues the paragraph.
   if (deepest_before_new != last_matched_container &&
-      container == last_matched_container && !fn.blank &&
-      deepest_before_new &&
+      container == last_matched_container && !fn.blank && deepest_before_new &&
       deepest_before_new->type() == NodeType::Paragraph) {
     add_line(deepest_before_new, line, offset, column, partially_consumed_tab);
   } else {
@@ -825,10 +826,10 @@ void Parser::add_text_to_container(ASTNode::Ptr container,
 // Main entry point
 // ============================================================================
 
-void Parser::parse_line(const std::string &line) {
-  std::string curline = line;
+void Parser::parse_line(std::string_view line) {
+  std::string curline(line);
 
-  // Ensure line ends with newline
+  // Ensure line ends with newline.  Extra Safety? Redundant?
   if (curline.empty() || !scan::is_line_end(curline.back())) {
     curline += '\n';
   }
@@ -854,8 +855,7 @@ void Parser::parse_line(const std::string &line) {
                     partially_consumed_tab);
 
     FirstNonspace fn = find_first_nonspace(curline, offset, column);
-    add_text_to_container(container, last_matched_container,
-                          deepest_before_new, curline, offset, column,
-                          partially_consumed_tab, fn);
+    add_text_to_container(container, last_matched_container, deepest_before_new,
+                          curline, offset, column, partially_consumed_tab, fn);
   }
 }

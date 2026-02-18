@@ -3,13 +3,14 @@
 
 #include "ast_node.hpp"
 #include <string>
+#include <string_view>
 
 class Parser {
 public:
   explicit Parser();
   ~Parser() = default;
 
-  void parse_line(const std::string &line);
+  void parse_line(std::string_view line);
 
   ASTNode::Ptr get_root() const { return root_; }
   ASTNode::Ptr get_deepest_open_block() const;

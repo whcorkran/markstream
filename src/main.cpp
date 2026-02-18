@@ -16,14 +16,14 @@ int main() {
     buf.feed(std::string_view(raw, static_cast<size_t>(n)));
 
     while (auto line = buf.consume_line()) {
-      parser.parse_line(std::string(line.value()));
+      parser.parse_line(line.value());
     }
   }
 
   // Handle any remaining partial line (no trailing newline)
   std::string_view rem = buf.remaining();
   if (!rem.empty()) {
-    parser.parse_line(std::string(rem));
+    parser.parse_line(rem);
   }
 
   HtmlRenderer renderer;

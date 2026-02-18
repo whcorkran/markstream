@@ -3,7 +3,6 @@
 
 #include "ast_node.hpp"
 #include <cstdint>
-#include <string>
 
 // Streaming parser event for incremental rendering
 // Uses depth-based tracking instead of IDs for simplicity and speed
@@ -16,12 +15,9 @@ struct BlockEvent {
 
   Action action;
   NodeType type;
-  uint8_t depth;       // Nesting level (0 = top-level, 1 = nested once, etc.)
-  std::string html;    // Rendered HTML (empty for Open, populated for Update/Close)
+  uint8_t depth; // Nesting level (0 = top-level, 1 = nested once, etc.)
+  const ASTNode *node;
 };
-
-// Type alias for consistency with existing code
-using ParseEvent = BlockEvent;
 
 // Event type helpers
 inline bool is_open_event(const BlockEvent &ev) {

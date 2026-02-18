@@ -1,5 +1,7 @@
 #include "streaming_session.hpp"
+#include "ast_node.hpp"
 #include "events.hpp"
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -28,3 +30,31 @@ std::optional<std::string_view> LineBuffer::consume_line() {
 
 StreamingSession::StreamingSession(EventCallback callback)
     : parser_(), line_buffer_(), callback_(std::move(callback)) {}
+
+void StreamingSession::emit(BlockEvent event) { callback_(event); }
+
+void StreamingSession::diff(ASTNode::Ptr new_tree, ASTNode::Ptr old_tree,
+                            uint8_t depth) {
+  if (new_tree == old_tree)
+    return;
+
+  if (!old_tree && new_tree) {
+    emit({BlockEvent::Open, new_tree->type(), depth, new_tree.get()});
+  }
+}
+
+// void StreamingSession::process_tree() {
+//     ASTView tree(parser_.get_root());
+//     for (auto node : tree) {
+//
+//     }
+// }
+
+void StreamingSession::parse(std::string_view token) {
+  line_buffer_.feed(token);
+  std::optional<std::string_view> line = line_buffer_.consume_line();
+  if (line) {
+    parser_.parse_line(line.value());
+    process_tree();
+  }
+}

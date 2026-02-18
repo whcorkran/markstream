@@ -4,6 +4,7 @@
 #include "ast_node.hpp"
 #include "events.hpp"
 #include "parser.hpp"
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <queue>
@@ -93,7 +94,7 @@ public:
 
   // Feed a token/chunk of markdown text
   // Emits Open events for new blocks, Update events for content changes
-  void feed(std::string_view token);
+  void parse(std::string_view token);
 
   // Signal end of input stream
   // Flushes buffer, closes all remaining open blocks, emits Close events
@@ -160,6 +161,8 @@ private:
 
   // Emit event via callback or queue
   void emit(BlockEvent event);
+
+  void diff(ASTNode::Ptr new_tree, ASTNode::Ptr old_tree, uint8_t depth);
 
   // Walk tree and emit Open/Update/Close events
   void process_tree();
