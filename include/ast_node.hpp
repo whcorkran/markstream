@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 enum class NodeType : uint8_t {
   Document = 0,
@@ -96,15 +97,20 @@ public:
   }
 
   // Tree navigation
-  Ptr parent() const { return parent_.lock(); }
-  Ptr first_child() const { return first_child_; }
-  Ptr last_child() const { return last_child_; }
-  Ptr next() const { return next_; }
-  Ptr prev() const { return prev_.lock(); }
+  const std::vector<Ptr> &children() { return children_; }
+  const std::vector<Ptr> &children() const;
+  Ptr first_child() const {
+    return children_.empty() ? nullptr : children_.front();
+  }
+  Ptr last_child() const {
+    return children_.empty() ? nullptr : children_.back();
+  }
 
-  // Tree mutation
-  void append_child(Ptr child);
-  void unlink();
+  void add_child(Ptr child) { children_.push_back(child); }
+  void replace_last_child(Ptr child) {
+    children_.pop_back();
+    children_.push_back(child);
+  }
 
   // Metadata access
   template <typename T> T *get_data() { return std::get_if<T>(&data_); }
@@ -124,12 +130,7 @@ private:
   uint16_t flags_;
   int start_line_, start_col_, end_line_, end_col_;
 
-  WeakPtr parent_;
-  Ptr first_child_;
-  Ptr last_child_;
-  Ptr next_;
-  WeakPtr prev_;
-
+  std::vector<Ptr> children_;
   Metadata data_;
   std::string content_;
 };
@@ -143,8 +144,18 @@ public:
   using pointer = const ASTNode *;
   using reference = const ASTNode &;
 
-  explicit ASTIterator(pointer node) : current_(node) {}
+  explicit ASTIterator(pointer node) : current_(node) {
+    nav_stack_.push_back({current_, 0});
+  }
+
+  // struct to refer to nodes as child index of parent's vector
+  struct ChildOf {
+    pointer parent;
+    size_t child_idx;
+  };
+  // DFS traversal
   ASTIterator &operator++();
+
   // Iterator operators
   reference operator*() const { return *current_; }
   pointer operator->() const { return current_; }
@@ -158,6 +169,7 @@ public:
 
 private:
   pointer current_;
+  std::vector<ChildOf> nav_stack_;
 };
 
 class ASTView {
