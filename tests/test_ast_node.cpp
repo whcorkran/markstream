@@ -96,59 +96,44 @@ TEST(ASTNode, SetPosition) {
 }
 
 // ============================================================================
-// Tree Structure Tests - Basic Navigation
+// Tree Structure Tests - Vector Children API
 // ============================================================================
 
-TEST(ASTNode, InitiallyNoFamily) {
+TEST(ASTNode, InitiallyNoChildren) {
   auto node = ASTNode::create(NodeType::Paragraph);
-  EXPECT_EQ(node->parent(), nullptr);
   EXPECT_EQ(node->first_child(), nullptr);
   EXPECT_EQ(node->last_child(), nullptr);
-  EXPECT_EQ(node->next(), nullptr);
-  EXPECT_EQ(node->prev(), nullptr);
+  EXPECT_TRUE(node->children().empty());
 }
 
-TEST(ASTNode, AppendSingleChild) {
+TEST(ASTNode, AddSingleChild) {
   auto parent = ASTNode::create(NodeType::Document);
   auto child = ASTNode::create(NodeType::Paragraph);
 
-  parent->append_child(child);
+  parent->add_child(child);
 
+  EXPECT_EQ(parent->children().size(), 1u);
   EXPECT_EQ(parent->first_child(), child);
   EXPECT_EQ(parent->last_child(), child);
-  EXPECT_EQ(child->parent(), parent);
-  EXPECT_EQ(child->next(), nullptr);
-  EXPECT_EQ(child->prev(), nullptr);
+  EXPECT_EQ(parent->children()[0], child);
 }
 
-TEST(ASTNode, AppendMultipleChildren) {
+TEST(ASTNode, AddMultipleChildren) {
   auto parent = ASTNode::create(NodeType::Document);
   auto child1 = ASTNode::create(NodeType::Paragraph);
   auto child2 = ASTNode::create(NodeType::Heading);
   auto child3 = ASTNode::create(NodeType::CodeBlock);
 
-  parent->append_child(child1);
-  parent->append_child(child2);
-  parent->append_child(child3);
+  parent->add_child(child1);
+  parent->add_child(child2);
+  parent->add_child(child3);
 
-  // Check parent pointers
+  EXPECT_EQ(parent->children().size(), 3u);
   EXPECT_EQ(parent->first_child(), child1);
   EXPECT_EQ(parent->last_child(), child3);
-
-  // Check child1
-  EXPECT_EQ(child1->parent(), parent);
-  EXPECT_EQ(child1->prev(), nullptr);
-  EXPECT_EQ(child1->next(), child2);
-
-  // Check child2
-  EXPECT_EQ(child2->parent(), parent);
-  EXPECT_EQ(child2->prev(), child1);
-  EXPECT_EQ(child2->next(), child3);
-
-  // Check child3
-  EXPECT_EQ(child3->parent(), parent);
-  EXPECT_EQ(child3->prev(), child2);
-  EXPECT_EQ(child3->next(), nullptr);
+  EXPECT_EQ(parent->children()[0], child1);
+  EXPECT_EQ(parent->children()[1], child2);
+  EXPECT_EQ(parent->children()[2], child3);
 }
 
 TEST(ASTNode, NestedStructure) {
@@ -156,138 +141,75 @@ TEST(ASTNode, NestedStructure) {
   auto quote = ASTNode::create(NodeType::BlockQuote);
   auto para = ASTNode::create(NodeType::Paragraph);
 
-  doc->append_child(quote);
-  quote->append_child(para);
+  doc->add_child(quote);
+  quote->add_child(para);
 
   EXPECT_EQ(doc->first_child(), quote);
-  EXPECT_EQ(quote->parent(), doc);
   EXPECT_EQ(quote->first_child(), para);
-  EXPECT_EQ(para->parent(), quote);
+  EXPECT_EQ(doc->children().size(), 1u);
+  EXPECT_EQ(quote->children().size(), 1u);
+  EXPECT_TRUE(para->children().empty());
+}
+
+TEST(ASTNode, ReplaceLastChild) {
+  auto parent = ASTNode::create(NodeType::Document);
+  auto child1 = ASTNode::create(NodeType::Paragraph);
+  auto child2 = ASTNode::create(NodeType::Heading);
+  auto replacement = ASTNode::create(NodeType::CodeBlock);
+
+  parent->add_child(child1);
+  parent->add_child(child2);
+  parent->replace_last_child(replacement);
+
+  EXPECT_EQ(parent->children().size(), 2u);
+  EXPECT_EQ(parent->first_child(), child1);
+  EXPECT_EQ(parent->last_child(), replacement);
+  EXPECT_EQ(parent->children()[0], child1);
+  EXPECT_EQ(parent->children()[1], replacement);
+}
+
+TEST(ASTNode, ChildrenOrderPreserved) {
+  auto parent = ASTNode::create(NodeType::Document);
+
+  for (int i = 0; i < 10; i++) {
+    parent->add_child(ASTNode::create(NodeType::Paragraph, i, 0));
+  }
+
+  EXPECT_EQ(parent->children().size(), 10u);
+  for (int i = 0; i < 10; i++) {
+    EXPECT_EQ(parent->children()[i]->start_line(), i);
+  }
 }
 
 // ============================================================================
-// Unlink Tests
+// Content Tests
 // ============================================================================
 
-TEST(ASTNode, UnlinkOnlyChild) {
-  auto parent = ASTNode::create(NodeType::Document);
-  auto child = ASTNode::create(NodeType::Paragraph);
-
-  parent->append_child(child);
-  child->unlink();
-
-  // Parent should have no children
-  EXPECT_EQ(parent->first_child(), nullptr);
-  EXPECT_EQ(parent->last_child(), nullptr);
-
-  // Child should have no family
-  EXPECT_EQ(child->parent(), nullptr);
-  EXPECT_EQ(child->prev(), nullptr);
-  EXPECT_EQ(child->next(), nullptr);
+TEST(ASTNode, ContentInitiallyEmpty) {
+  auto node = ASTNode::create(NodeType::Paragraph);
+  EXPECT_TRUE(node->content().empty());
 }
 
-TEST(ASTNode, UnlinkFirstChild) {
-  auto parent = ASTNode::create(NodeType::Document);
-  auto child1 = ASTNode::create(NodeType::Paragraph);
-  auto child2 = ASTNode::create(NodeType::Heading);
-  auto child3 = ASTNode::create(NodeType::CodeBlock);
-
-  parent->append_child(child1);
-  parent->append_child(child2);
-  parent->append_child(child3);
-
-  child1->unlink();
-
-  // Parent's first child should be child2
-  EXPECT_EQ(parent->first_child(), child2);
-  EXPECT_EQ(parent->last_child(), child3);
-
-  // child2 should have no prev
-  EXPECT_EQ(child2->prev(), nullptr);
-  EXPECT_EQ(child2->next(), child3);
-
-  // child1 should be orphaned
-  EXPECT_EQ(child1->parent(), nullptr);
-  EXPECT_EQ(child1->next(), nullptr);
+TEST(ASTNode, AppendContent) {
+  auto node = ASTNode::create(NodeType::Paragraph);
+  node->append_content("hello ");
+  node->append_content("world");
+  EXPECT_EQ(node->content(), "hello world");
 }
 
-TEST(ASTNode, UnlinkMiddleChild) {
-  auto parent = ASTNode::create(NodeType::Document);
-  auto child1 = ASTNode::create(NodeType::Paragraph);
-  auto child2 = ASTNode::create(NodeType::Heading);
-  auto child3 = ASTNode::create(NodeType::CodeBlock);
-
-  parent->append_child(child1);
-  parent->append_child(child2);
-  parent->append_child(child3);
-
-  child2->unlink();
-
-  // Parent's children should skip child2
-  EXPECT_EQ(parent->first_child(), child1);
-  EXPECT_EQ(parent->last_child(), child3);
-
-  // child1 and child3 should link directly
-  EXPECT_EQ(child1->next(), child3);
-  EXPECT_EQ(child3->prev(), child1);
-
-  // child2 should be orphaned
-  EXPECT_EQ(child2->parent(), nullptr);
-  EXPECT_EQ(child2->prev(), nullptr);
-  EXPECT_EQ(child2->next(), nullptr);
+TEST(ASTNode, SetContent) {
+  auto node = ASTNode::create(NodeType::Paragraph);
+  node->append_content("old");
+  std::string new_content = "new content";
+  node->set_content(std::move(new_content));
+  EXPECT_EQ(node->content(), "new content");
 }
 
-TEST(ASTNode, UnlinkLastChild) {
-  auto parent = ASTNode::create(NodeType::Document);
-  auto child1 = ASTNode::create(NodeType::Paragraph);
-  auto child2 = ASTNode::create(NodeType::Heading);
-  auto child3 = ASTNode::create(NodeType::CodeBlock);
-
-  parent->append_child(child1);
-  parent->append_child(child2);
-  parent->append_child(child3);
-
-  child3->unlink();
-
-  // Parent's last child should be child2
-  EXPECT_EQ(parent->first_child(), child1);
-  EXPECT_EQ(parent->last_child(), child2);
-
-  // child2 should have no next
-  EXPECT_EQ(child2->next(), nullptr);
-
-  // child3 should be orphaned
-  EXPECT_EQ(child3->parent(), nullptr);
-  EXPECT_EQ(child3->prev(), nullptr);
-}
-
-TEST(ASTNode, UnlinkDoesNotDelete) {
-  auto parent = ASTNode::create(NodeType::Document);
-  auto child = ASTNode::create(NodeType::Paragraph);
-
-  parent->append_child(child);
-  auto weak_child = std::weak_ptr<ASTNode>(child);
-
-  child->unlink();
-
-  // child still exists (we hold a shared_ptr)
-  EXPECT_FALSE(weak_child.expired());
-  EXPECT_NE(child, nullptr);
-  EXPECT_EQ(child->type(), NodeType::Paragraph);
-}
-
-TEST(ASTNode, UnlinkAndReattach) {
-  auto parent1 = ASTNode::create(NodeType::Document);
-  auto parent2 = ASTNode::create(NodeType::BlockQuote);
-  auto child = ASTNode::create(NodeType::Paragraph);
-
-  parent1->append_child(child);
-  child->unlink();
-  parent2->append_child(child);
-
-  EXPECT_EQ(parent1->first_child(), nullptr);
-  EXPECT_EQ(parent2->first_child(), child);
-  EXPECT_EQ(child->parent(), parent2);
+TEST(ASTNode, ClearContent) {
+  auto node = ASTNode::create(NodeType::Paragraph);
+  node->append_content("some text");
+  node->clear_content();
+  EXPECT_TRUE(node->content().empty());
 }
 
 // ============================================================================
@@ -308,7 +230,7 @@ TEST(ASTNode, SetListData) {
 
   node->set_data(list);
 
-  auto* retrieved = node->get_data<ListData>();
+  auto *retrieved = node->get_data<ListData>();
   ASSERT_NE(retrieved, nullptr);
   EXPECT_EQ(retrieved->start, 1);
   EXPECT_EQ(retrieved->padding, 2);
@@ -322,7 +244,7 @@ TEST(ASTNode, SetCodeData) {
 
   node->set_data(code);
 
-  auto* retrieved = node->get_data<CodeData>();
+  auto *retrieved = node->get_data<CodeData>();
   ASSERT_NE(retrieved, nullptr);
   EXPECT_EQ(retrieved->info, "python");
   EXPECT_EQ(retrieved->fence_length, 3);
@@ -335,7 +257,7 @@ TEST(ASTNode, SetHeadingData) {
 
   node->set_data(heading);
 
-  auto* retrieved = node->get_data<HeadingData>();
+  auto *retrieved = node->get_data<HeadingData>();
   ASSERT_NE(retrieved, nullptr);
   EXPECT_EQ(retrieved->level, 2);
   EXPECT_FALSE(retrieved->setext);
@@ -345,7 +267,7 @@ TEST(ASTNode, SetHtmlBlockType) {
   auto node = ASTNode::create(NodeType::HtmlBlock);
   node->set_data(3); // Type 3 processing instruction
 
-  auto* retrieved = node->get_data<int>();
+  auto *retrieved = node->get_data<int>();
   ASSERT_NE(retrieved, nullptr);
   EXPECT_EQ(*retrieved, 3);
 }
@@ -390,11 +312,11 @@ TEST(ASTNode, ChildrenKeptAliveByParent) {
   {
     auto child = ASTNode::create(NodeType::Paragraph);
     weak_child = child;
-    parent->append_child(child);
-    // child goes out of scope here
+    parent->add_child(child);
+    // child local var goes out of scope here
   }
 
-  // Child should still be alive (held by parent)
+  // Child should still be alive (held by parent's children vector)
   EXPECT_FALSE(weak_child.expired());
   EXPECT_NE(parent->first_child(), nullptr);
 }
@@ -406,7 +328,7 @@ TEST(ASTNode, ParentDoesNotKeepChildrenAfterDestruction) {
     auto parent = ASTNode::create(NodeType::Document);
     auto child = ASTNode::create(NodeType::Paragraph);
     weak_child = child;
-    parent->append_child(child);
+    parent->add_child(child);
     // parent and child go out of scope
   }
 
@@ -414,38 +336,32 @@ TEST(ASTNode, ParentDoesNotKeepChildrenAfterDestruction) {
   EXPECT_TRUE(weak_child.expired());
 }
 
-TEST(ASTNode, UnlinkedChildNeedsExternalReference) {
+TEST(ASTNode, ReplaceLastChildReleasesOld) {
   auto parent = ASTNode::create(NodeType::Document);
-  std::weak_ptr<ASTNode> weak_child;
+  std::weak_ptr<ASTNode> weak_old;
 
   {
-    auto child = ASTNode::create(NodeType::Paragraph);
-    weak_child = child;
-    parent->append_child(child);
-    child->unlink();
-    // child goes out of scope here
+    auto old_child = ASTNode::create(NodeType::Paragraph);
+    weak_old = old_child;
+    parent->add_child(old_child);
+    // old_child local var goes out of scope
   }
 
-  // Child was unlinked and no other references exist
-  EXPECT_TRUE(weak_child.expired());
+  // Still alive -- held by parent
+  EXPECT_FALSE(weak_old.expired());
+
+  // Replace with a new child
+  auto new_child = ASTNode::create(NodeType::Heading);
+  parent->replace_last_child(new_child);
+
+  // Old child no longer referenced by parent, should be destroyed
+  EXPECT_TRUE(weak_old.expired());
+  EXPECT_EQ(parent->last_child(), new_child);
 }
 
 // ============================================================================
 // Edge Cases
 // ============================================================================
-
-TEST(ASTNode, AppendChildToItself) {
-  auto node = ASTNode::create(NodeType::Document);
-  // This would create a cycle - undefined behavior but shouldn't crash
-  // In practice, parser logic should prevent this
-  EXPECT_NO_THROW(node->append_child(node));
-}
-
-TEST(ASTNode, UnlinkNodeWithoutParent) {
-  auto node = ASTNode::create(NodeType::Paragraph);
-  EXPECT_NO_THROW(node->unlink());
-  EXPECT_EQ(node->parent(), nullptr);
-}
 
 TEST(ASTNode, DeepHierarchy) {
   auto root = ASTNode::create(NodeType::Document);
@@ -454,17 +370,163 @@ TEST(ASTNode, DeepHierarchy) {
   // Create 100-level deep hierarchy
   for (int i = 0; i < 100; i++) {
     auto child = ASTNode::create(NodeType::BlockQuote);
-    current->append_child(child);
+    current->add_child(child);
     current = child;
   }
 
-  // Navigate back up
-  int levels = 0;
-  current = current->parent();
-  while (current) {
-    levels++;
-    current = current->parent();
+  // Walk down last_child chain to count depth
+  int depth = 0;
+  current = root;
+  while (current->last_child()) {
+    current = current->last_child();
+    depth++;
   }
 
-  EXPECT_EQ(levels, 100);
+  EXPECT_EQ(depth, 100);
+}
+
+TEST(ASTNode, EmptyChildrenIsStable) {
+  auto node = ASTNode::create(NodeType::Document);
+
+  // Multiple accesses to empty children should be stable
+  EXPECT_TRUE(node->children().empty());
+  EXPECT_EQ(node->children().size(), 0u);
+  EXPECT_EQ(node->first_child(), nullptr);
+  EXPECT_EQ(node->last_child(), nullptr);
+}
+
+// ============================================================================
+// ASTIterator Tests
+// ============================================================================
+
+TEST(ASTIterator, SingleNode) {
+  auto root = ASTNode::create(NodeType::Document);
+  ASTView view(root);
+
+  std::vector<NodeType> visited;
+  for (const auto &node : view) {
+    visited.push_back(node.type());
+  }
+
+  ASSERT_EQ(visited.size(), 1u);
+  EXPECT_EQ(visited[0], NodeType::Document);
+}
+
+TEST(ASTIterator, FlatChildren) {
+  auto root = ASTNode::create(NodeType::Document);
+  root->add_child(ASTNode::create(NodeType::Paragraph));
+  root->add_child(ASTNode::create(NodeType::Heading));
+  root->add_child(ASTNode::create(NodeType::CodeBlock));
+
+  ASTView view(root);
+
+  std::vector<NodeType> visited;
+  for (const auto &node : view) {
+    visited.push_back(node.type());
+  }
+
+  ASSERT_EQ(visited.size(), 4u);
+  EXPECT_EQ(visited[0], NodeType::Document);
+  EXPECT_EQ(visited[1], NodeType::Paragraph);
+  EXPECT_EQ(visited[2], NodeType::Heading);
+  EXPECT_EQ(visited[3], NodeType::CodeBlock);
+}
+
+TEST(ASTIterator, NestedDFS) {
+  // Build:  Doc -> BQ -> Para
+  //             -> Heading
+  auto doc = ASTNode::create(NodeType::Document);
+  auto bq = ASTNode::create(NodeType::BlockQuote);
+  auto para = ASTNode::create(NodeType::Paragraph);
+  auto heading = ASTNode::create(NodeType::Heading);
+
+  doc->add_child(bq);
+  bq->add_child(para);
+  doc->add_child(heading);
+
+  ASTView view(doc);
+
+  std::vector<NodeType> visited;
+  for (const auto &node : view) {
+    visited.push_back(node.type());
+  }
+
+  // DFS preorder: Document, BlockQuote, Paragraph, Heading
+  ASSERT_EQ(visited.size(), 4u);
+  EXPECT_EQ(visited[0], NodeType::Document);
+  EXPECT_EQ(visited[1], NodeType::BlockQuote);
+  EXPECT_EQ(visited[2], NodeType::Paragraph);
+  EXPECT_EQ(visited[3], NodeType::Heading);
+}
+
+TEST(ASTIterator, DeepNesting) {
+  auto root = ASTNode::create(NodeType::Document);
+  auto current = root;
+
+  for (int i = 0; i < 5; i++) {
+    auto child = ASTNode::create(NodeType::BlockQuote);
+    current->add_child(child);
+    current = child;
+  }
+  // Add a leaf at the bottom
+  current->add_child(ASTNode::create(NodeType::Paragraph));
+
+  ASTView view(root);
+
+  int count = 0;
+  for ([[maybe_unused]] const auto &node : view) {
+    count++;
+  }
+
+  // Document + 5 BlockQuotes + 1 Paragraph = 7
+  EXPECT_EQ(count, 7);
+}
+
+TEST(ASTIterator, ComplexTree) {
+  // Build:
+  //   Doc
+  //   ├─ BQ
+  //   │  ├─ Para
+  //   │  └─ CodeBlock
+  //   └─ List
+  //      ├─ Item (with Para child)
+  //      └─ Item (with Para child)
+  auto doc = ASTNode::create(NodeType::Document);
+  auto bq = ASTNode::create(NodeType::BlockQuote);
+  auto para1 = ASTNode::create(NodeType::Paragraph);
+  auto code = ASTNode::create(NodeType::CodeBlock);
+  auto list = ASTNode::create(NodeType::List);
+  auto item1 = ASTNode::create(NodeType::Item);
+  auto item1_para = ASTNode::create(NodeType::Paragraph);
+  auto item2 = ASTNode::create(NodeType::Item);
+  auto item2_para = ASTNode::create(NodeType::Paragraph);
+
+  doc->add_child(bq);
+  bq->add_child(para1);
+  bq->add_child(code);
+  doc->add_child(list);
+  list->add_child(item1);
+  item1->add_child(item1_para);
+  list->add_child(item2);
+  item2->add_child(item2_para);
+
+  ASTView view(doc);
+
+  std::vector<NodeType> visited;
+  for (const auto &node : view) {
+    visited.push_back(node.type());
+  }
+
+  // DFS preorder:
+  // Doc, BQ, Para, CodeBlock, List, Item, Para, Item, Para
+  ASSERT_EQ(visited.size(), 9u);
+  EXPECT_EQ(visited[0], NodeType::Document);
+  EXPECT_EQ(visited[1], NodeType::BlockQuote);
+  EXPECT_EQ(visited[2], NodeType::Paragraph);
+  EXPECT_EQ(visited[3], NodeType::CodeBlock);
+  EXPECT_EQ(visited[4], NodeType::List);
+  EXPECT_EQ(visited[5], NodeType::Item);
+  EXPECT_EQ(visited[6], NodeType::Paragraph);
+  EXPECT_EQ(visited[7], NodeType::Item);
+  EXPECT_EQ(visited[8], NodeType::Paragraph);
 }

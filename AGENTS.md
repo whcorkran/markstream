@@ -64,7 +64,7 @@ src/
   event.cpp             Empty placeholder (not compiled)
 
 tests/
-  test_ast_node.cpp     AST node tests (currently broken, needs update for vector API)
+  test_ast_node.cpp     31 ASTNode + 5 ASTIterator tests (vector API)
   test_scanners.cpp     ~40 tests: all scanner functions (working)
 
 build/_deps/cmark-src/  Reference cmark source (fetched at build time, not used in code)
@@ -152,7 +152,7 @@ All `try_*` functions receive an `OpenBlockCtx` struct bundling the mutable pars
 
 **`finalize(node)`:** Closes a block -- clears `NODE_OPEN`, trims trailing blank lines from indented code, determines list tight/loose status.
 
-**Planned refactor -- `open_blocks_` stack:** The parser currently walks parent pointers to traverse up the open block chain. This will be replaced with an explicit `std::vector<ASTNode::Ptr> open_blocks_` stack (see IMPLEMENTATION_PLAN.md). This eliminates the need for parent pointers on ASTNode entirely, completing the transition to the vector-based tree.
+**`open_blocks_` stack:** The parser maintains an explicit `std::vector<ASTNode::Ptr> open_blocks_` stack where `open_blocks_[0]` is the root Document and `open_blocks_.back()` is the deepest open block. This replaces the old parent-pointer walking. Phase 1 iterates the stack to check continuation; `add_child()` and `finalize()` manipulate the stack directly. The `pre_phase2_depth_` member tracks the stack size before phase 2 runs, so phase 3 can distinguish pre-existing unmatched blocks from newly created ones when finalizing.
 
 #### ASTNode (`include/ast_node.hpp`)
 
@@ -214,42 +214,32 @@ Key scanners: `scan_atx_heading_start`, `scan_setext_heading_line`, `scan_open_c
 
 ## Current State and Known Issues
 
-### Transitional State
+The vector-based AST refactor (Phase 1) is complete. The codebase compiles cleanly and all 98 tests pass. The parser, renderer, and tests all use the vector children API with no remaining references to the old linked-list API (`parent()`, `next()`, `prev()`, `unlink()`, `append_child()`).
 
-The codebase is mid-refactor from a cmark-style doubly-linked AST to a vector-based tree. The ASTNode header has been updated (vector children, no parent/next/prev), but the parser, renderer, and tests still reference the old linked-list API. **The code does not compile on the `better_tree` branch.** See IMPLEMENTATION_PLAN.md for the remaining steps.
+### Remaining Issues
 
-### Specific Issues
+1. **StreamingSession is mostly unimplemented.** Only `parse()` (processes a single line, should loop), `emit()` (no null check, no queue fallback), and a stub `process_tree()` exist. `finish()`, `reset()`, `pop_event()`, `pop_events()`, `depth_of()`, `render_node()` are declared but undefined (will cause linker errors if called).
 
-1. **Parser uses removed ASTNode API.** `parser.cpp` calls `parent()`, `next()`, `unlink()`, `append_child()` which no longer exist on ASTNode. Must be refactored to use the `open_blocks_` stack pattern described in IMPLEMENTATION_PLAN.md.
+2. **`event.cpp` is empty** and not in the CMakeLists.txt compile list.
 
-2. **HtmlRenderer uses removed ASTNode API.** `html_renderer.cpp` calls `parent()` and `next()`. Must be updated to iterate via `children()` vector.
+3. **`scan_thematic_break` accepts backslash.** Line 273 of `scanners.cpp` allows `\\` between thematic break markers, which is not valid per CommonMark.
 
-3. **test_ast_node.cpp is broken.** Tests reference `parent()`, `next()`, `prev()`, `unlink()`, `append_child()`. Must be rewritten for the vector API.
+4. **HTML escaping incomplete.** `escape_html()` does not escape `'` (single quote). Relevant for attribute contexts.
 
-4. **StreamingSession is mostly unimplemented.** Only `parse()` (processes a single line, should loop), `emit()` (no null check, no queue fallback), and a stub `process_tree()` exist. `finish()`, `reset()`, `pop_event()`, `pop_events()`, `depth_of()`, `render_node()` are declared but undefined (will cause linker errors if called).
-
-5. **`event.cpp` is empty** and not in the CMakeLists.txt compile list.
-
-6. **Missing `const children()` definition.** The const overload of `children()` is declared in `ast_node.hpp` but never defined in `ast_node.cpp`.
-
-7. **ASTIterator logic.** The `operator++` implementation may have a traversal bug where it falls through to `current_ = nullptr` after popping the stack, potentially skipping sibling nodes.
-
-8. **`scan_thematic_break` accepts backslash.** Line 273 of `scanners.cpp` allows `\\` between thematic break markers, which is not valid per CommonMark.
-
-9. **HTML escaping incomplete.** `escape_html()` does not escape `'` (single quote). Relevant for attribute contexts.
-
-10. **cmark linked unnecessarily.** CMakeLists.txt links cmark via `target_link_libraries` despite no source file including cmark headers. This adds unnecessary build coupling.
+5. **cmark linked unnecessarily.** CMakeLists.txt links cmark via `target_link_libraries` despite no source file including cmark headers. This adds unnecessary build coupling.
 
 ## Implementation Roadmap
 
-### Phase 1: Complete the AST Refactor (in progress)
+### Phase 1: Complete the AST Refactor (DONE)
 
-Finish the vector-based tree transition per IMPLEMENTATION_PLAN.md:
-- Add `open_blocks_` stack to Parser
-- Rewrite parser.cpp to use the stack instead of parent pointers
-- Update html_renderer.cpp to iterate via `children()`
-- Rewrite test_ast_node.cpp for the vector API
-- Fix the const `children()` definition and ASTIterator bugs
+The vector-based tree transition is complete:
+- [x] Added `open_blocks_` stack to Parser (replaces parent-pointer walking)
+- [x] Rewrote parser.cpp to use the stack for all navigation and finalization
+- [x] Updated html_renderer.cpp to iterate via `children()` vector
+- [x] Rewrote test_ast_node.cpp for the vector API (31 ASTNode + 5 ASTIterator tests)
+- [x] Fixed the const `children()` definition in ast_node.cpp
+- [x] Rewrote ASTIterator `operator++` with correct DFS traversal logic
+- [x] Fixed ASTIterator comparison operators to accept `const` refs
 
 ### Phase 2: Implement StreamingSession
 
@@ -276,9 +266,7 @@ Not started. Reference: `build/_deps/cmark-src/src/inlines.c`. The CommonMark de
 
 **Working tests:**
 - `test_scanners.cpp`: ~40 tests covering all scanner functions. No dependency on ASTNode -- these work.
-
-**Broken tests (pending refactor):**
-- `test_ast_node.cpp`: References removed linked-list API. Needs rewrite for vector children.
+- `test_ast_node.cpp`: 31 ASTNode tests (creation, flags, position, vector children, content, metadata, memory management, edge cases) + 5 ASTIterator tests (single node, flat children, nested DFS, deep nesting, complex tree).
 
 **Not yet tested:**
 - Parser integration (no spec harness yet)

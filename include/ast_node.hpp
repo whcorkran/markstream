@@ -144,9 +144,7 @@ public:
   using pointer = const ASTNode *;
   using reference = const ASTNode &;
 
-  explicit ASTIterator(pointer node) : current_(node) {
-    nav_stack_.push_back({current_, 0});
-  }
+  explicit ASTIterator(pointer node) : current_(node) {}
 
   // struct to refer to nodes as child index of parent's vector
   struct ChildrenOf {
@@ -161,10 +159,10 @@ public:
   reference operator*() const { return *current_; }
   pointer operator->() const { return current_; }
 
-  bool operator==(ASTIterator &other) const {
+  bool operator==(const ASTIterator &other) const {
     return current_ == other.current_;
   }
-  bool operator!=(ASTIterator &other) const {
+  bool operator!=(const ASTIterator &other) const {
     return current_ != other.current_;
   }
 

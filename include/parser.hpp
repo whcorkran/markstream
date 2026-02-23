@@ -4,6 +4,7 @@
 #include "ast_node.hpp"
 #include <string>
 #include <string_view>
+#include <vector>
 
 class Parser {
 public:
@@ -16,9 +17,23 @@ public:
   ASTNode::Ptr get_deepest_open_block() const;
   bool is_complete() const;
 
+  // Access the open blocks stack (for StreamingSession depth queries)
+  const std::vector<ASTNode::Ptr> &open_blocks() const {
+    return open_blocks_;
+  }
+
 private:
   ASTNode::Ptr root_;
   int current_line_ = 0;
+
+  // Explicit stack of open blocks: open_blocks_[0] is root,
+  // open_blocks_.back() is the deepest open block.
+  // Replaces the old parent-pointer walking.
+  std::vector<ASTNode::Ptr> open_blocks_;
+
+  // Stack depth saved before phase 2 runs, so phase 3 knows which blocks
+  // were pre-existing (and thus eligible for finalization) vs newly created.
+  size_t pre_phase2_depth_ = 0;
 
   // Line processing helpers
   struct FirstNonspace {
@@ -50,10 +65,11 @@ private:
   bool parse_html_block_prefix(ASTNode::Ptr container,
                                const FirstNonspace &fn) const;
 
-  // Block creation
+  // Block creation and finalization using open_blocks_ stack
   ASTNode::Ptr add_child(ASTNode::Ptr parent, NodeType block_type,
                          int start_column);
-  ASTNode::Ptr finalize(ASTNode::Ptr b);
+  void finalize(ASTNode::Ptr b);
+  void finalize_above(size_t target_depth);
 
   // Block type checks
   bool can_contain(NodeType parent_type, NodeType child_type) const;
@@ -75,9 +91,9 @@ private:
 
   // try_* return values for phase 2
   enum class BlockStart {
-    None,     // did not match — try next starter
-    Found,    // matched, container may accept more blocks (continue loop)
-    Leaf,     // matched, container accepts lines (break loop)
+    None,  // did not match -- try next starter
+    Found, // matched, container may accept more blocks (continue loop)
+    Leaf,  // matched, container accepts lines (break loop)
   };
 
   // Phase 2: new block starters (priority order)

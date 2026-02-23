@@ -34,10 +34,8 @@ std::string HtmlRenderer::render(ASTNode::Ptr root) {
 }
 
 void HtmlRenderer::render_children(ASTNode::Ptr node) {
-  ASTNode::Ptr child = node->first_child();
-  while (child) {
+  for (const auto &child : node->children()) {
     render_node(child);
-    child = child->next();
   }
 }
 
@@ -64,7 +62,12 @@ void HtmlRenderer::render_node(ASTNode::Ptr node) {
     } else {
       output_ += "<ul>\n";
     }
-    render_children(node);
+
+    // Render items, passing list data so they know tight/loose status
+    for (const auto &child : node->children()) {
+      render_list_item(child, list);
+    }
+
     if (list && list->is_ordered) {
       output_ += "</ol>\n";
     } else {
@@ -73,43 +76,12 @@ void HtmlRenderer::render_node(ASTNode::Ptr node) {
     break;
   }
 
-  case NodeType::Item: {
-    // Check if parent list is tight
-    ASTNode::Ptr parent = node->parent();
-    const ListData *list = parent ? parent->get_data<ListData>() : nullptr;
-    bool tight = list && list->is_tight;
-
-    output_ += "<li>";
-
-    if (tight) {
-      // Tight list: render children inline, stripping <p> tags
-      ASTNode::Ptr child = node->first_child();
-      while (child) {
-        if (child->type() == NodeType::Paragraph) {
-          // Render paragraph content without <p> tags
-          const std::string &text = child->content();
-          if (!text.empty()) {
-            std::string content = text;
-            // Trim trailing newline
-            while (!content.empty() && content.back() == '\n') {
-              content.pop_back();
-            }
-            output_ += escape_html(content);
-          }
-        } else {
-          render_node(child);
-        }
-        child = child->next();
-      }
-      output_ += "</li>\n";
-    } else {
-      // Loose list: render children normally
-      output_ += "\n";
-      render_children(node);
-      output_ += "</li>\n";
-    }
+  case NodeType::Item:
+    // Items should be rendered via render_list_item from the List case.
+    // If we get here directly (shouldn't happen in well-formed AST),
+    // fall back to loose rendering.
+    render_list_item(node, nullptr);
     break;
-  }
 
   case NodeType::CodeBlock: {
     const CodeData *code = node->get_data<CodeData>();
@@ -190,5 +162,38 @@ void HtmlRenderer::render_node(ASTNode::Ptr node) {
   case NodeType::ThematicBreak:
     output_ += "<hr />\n";
     break;
+  }
+}
+
+void HtmlRenderer::render_list_item(ASTNode::Ptr node,
+                                    const ListData *list) {
+  bool tight = list && list->is_tight;
+
+  output_ += "<li>";
+
+  if (tight) {
+    // Tight list: render children inline, stripping <p> tags
+    for (const auto &child : node->children()) {
+      if (child->type() == NodeType::Paragraph) {
+        // Render paragraph content without <p> tags
+        const std::string &text = child->content();
+        if (!text.empty()) {
+          std::string content = text;
+          // Trim trailing newline
+          while (!content.empty() && content.back() == '\n') {
+            content.pop_back();
+          }
+          output_ += escape_html(content);
+        }
+      } else {
+        render_node(child);
+      }
+    }
+    output_ += "</li>\n";
+  } else {
+    // Loose list: render children normally
+    output_ += "\n";
+    render_children(node);
+    output_ += "</li>\n";
   }
 }
