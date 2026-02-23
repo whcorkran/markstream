@@ -43,12 +43,11 @@ void StreamingSession::diff(ASTNode::Ptr new_tree, ASTNode::Ptr old_tree,
   }
 }
 
-// void StreamingSession::process_tree() {
-//     ASTView tree(parser_.get_root());
-//     for (auto node : tree) {
-//
-//     }
-// }
+void StreamingSession::process_tree() {
+  ASTView tree(parser_.get_root());
+  for (auto node : tree) {
+  }
+}
 
 void StreamingSession::parse(std::string_view token) {
   line_buffer_.feed(token);
