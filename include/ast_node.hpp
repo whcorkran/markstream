@@ -149,10 +149,11 @@ public:
   }
 
   // struct to refer to nodes as child index of parent's vector
-  struct ChildOf {
+  struct ChildrenOf {
     pointer parent;
     size_t child_idx;
   };
+
   // DFS traversal
   ASTIterator &operator++();
 
@@ -169,7 +170,7 @@ public:
 
 private:
   pointer current_;
-  std::vector<ChildOf> nav_stack_;
+  std::vector<ChildrenOf> nav_stack_;
 };
 
 class ASTView {
