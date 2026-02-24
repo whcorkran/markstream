@@ -33,26 +33,37 @@ StreamingSession::StreamingSession(EventCallback callback)
 
 void StreamingSession::emit(BlockEvent event) { callback_(event); }
 
-void StreamingSession::diff(ASTNode::Ptr new_tree, ASTNode::Ptr old_tree,
-                            uint8_t depth) {
-  if (new_tree == old_tree)
-    return;
-
-  if (!old_tree && new_tree) {
-    emit({BlockEvent::Open, new_tree->type(), depth, new_tree.get()});
-  }
-}
-
 void StreamingSession::process_tree() {
   ASTView tree(parser_.get_root());
-  for (auto node : tree) {
+  for (auto it = tree.begin(); it != tree.end(); ++it) {
+    const ASTNode &node = *it;
+    if (!announced_.contains(&node)) {
+      emit(BlockEvent{
+          BlockEvent::Open,
+          node.type(),
+          &node,
+      });
+      announced_.insert(&node);
+    } else if (!node.is_open()) {
+      emit(BlockEvent{
+          BlockEvent::Close,
+          node.type(),
+          &node,
+      });
+    } else if (node.is_updated()) {
+      emit(BlockEvent{
+          BlockEvent::Update,
+          node.type(),
+          &node,
+      });
+      node.set_updated(false);
+    }
   }
 }
 
 void StreamingSession::parse(std::string_view token) {
   line_buffer_.feed(token);
-  std::optional<std::string_view> line = line_buffer_.consume_line();
-  if (line) {
+  while (auto line = line_buffer_.consume_line()) {
     parser_.parse_line(line.value());
     process_tree();
   }

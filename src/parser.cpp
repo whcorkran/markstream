@@ -12,15 +12,13 @@ Parser::Parser() : current_line_(0) {
   open_blocks_.push_back(root_);
 }
 
-// get the deepest open block (== open_blocks_.back())
+// get the deepest open block
 ASTNode::Ptr Parser::get_deepest_open_block() const {
   return open_blocks_.back();
 }
 
 // check if document has no open nested blocks
-bool Parser::is_complete() const {
-  return open_blocks_.size() <= 1;
-}
+bool Parser::is_complete() const { return open_blocks_.size() <= 1; }
 
 // line processing helpers
 char Parser::peek_at(const std::string &input, size_t pos) const {
@@ -533,9 +531,8 @@ Parser::BlockStart Parser::try_code_fence(OpenBlockCtx &ctx) {
 
   // Advance past the entire opening fence line (info string is metadata, not
   // content)
-  advance_offset(ctx.line, ctx.offset, ctx.column,
-                 ctx.line.size() - ctx.offset, false,
-                 ctx.partially_consumed_tab);
+  advance_offset(ctx.line, ctx.offset, ctx.column, ctx.line.size() - ctx.offset,
+                 false, ctx.partially_consumed_tab);
   return BlockStart::Leaf;
 }
 
@@ -817,8 +814,7 @@ void Parser::add_text_to_container(ASTNode::Ptr container,
         // Finalize unmatched blocks between matched_idx+1 and the end of
         // the pre-phase-2 stack. Phase 2's add_child() may have already
         // popped some, so cap at the current stack size.
-        size_t finalize_end =
-            std::min(pre_phase2_depth_, open_blocks_.size());
+        size_t finalize_end = std::min(pre_phase2_depth_, open_blocks_.size());
         if (finalize_end > matched_idx + 1) {
           for (size_t i = finalize_end; i > matched_idx + 1; i--) {
             finalize(open_blocks_[i - 1]);

@@ -15,7 +15,6 @@ struct BlockEvent {
 
   Action action;
   NodeType type;
-  uint8_t depth; // Nesting level (0 = top-level, 1 = nested once, etc.)
   const ASTNode *node;
 };
 

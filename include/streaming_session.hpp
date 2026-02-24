@@ -162,13 +162,8 @@ private:
   // Emit event via callback or queue
   void emit(BlockEvent event);
 
-  void diff(ASTNode::Ptr new_tree, ASTNode::Ptr old_tree, uint8_t depth);
-
   // Walk tree and emit Open/Update/Close events
   void process_tree();
-
-  // Calculate nesting depth of a node
-  uint8_t depth_of(const ASTNode *node) const;
 
   // Check if node type accepts text content
   bool accepts_text(NodeType type) const;

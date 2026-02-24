@@ -50,7 +50,11 @@ struct HeadingData {
 };
 
 // Node flags
-enum NodeFlags : uint16_t { NODE_OPEN = 1 << 0, NODE_LAST_LINE_BLANK = 1 << 1 };
+enum NodeFlags : uint16_t {
+  NODE_OPEN = 1 << 0,
+  NODE_LAST_LINE_BLANK = 1 << 1,
+  NODE_CONTENT_UPDATE = 1 << 2
+};
 
 class ASTNode : public std::enable_shared_from_this<ASTNode> {
 public:
@@ -81,6 +85,10 @@ public:
   void set_last_line_blank(bool v) {
     v ? flags_ |= NODE_LAST_LINE_BLANK : flags_ &= ~NODE_LAST_LINE_BLANK;
   }
+  bool is_updated() const { return flags_ & NODE_CONTENT_UPDATE; }
+  void set_updated(bool v) {
+    v ? flags_ /= NODE_CONTENT_UPDATE : flags_ &= ~NODE_CONTENT_UPDATE;
+  }
 
   // Position
   int start_line() const { return start_line_; }
@@ -96,7 +104,7 @@ public:
     end_col_ = col;
   }
 
-  // Tree navigation
+  // Tree edges and relations constructed with children vector
   const std::vector<Ptr> &children() { return children_; }
   const std::vector<Ptr> &children() const;
   Ptr first_child() const {
@@ -119,11 +127,21 @@ public:
   }
   template <typename T> void set_data(T &&d) { data_ = std::forward<T>(d); }
 
-  // Text content (accumulated during parsing, read during rendering)
+  // Text content (accumulated during parsing, read during rendering, update bit
+  // is also set here)
   const std::string &content() const { return content_; }
-  void append_content(std::string_view text) { content_.append(text); }
-  void set_content(std::string &&text) { content_ = std::move(text); }
-  void clear_content() { content_.clear(); }
+  void append_content(std::string_view text) {
+    content_.append(text);
+    set_updated(true);
+  }
+  void set_content(std::string &&text) {
+    content_ = std::move(text);
+    set_updated(true);
+  }
+  void clear_content() {
+    content_.clear();
+    set_updated(true);
+  }
 
 private:
   NodeType type_;
