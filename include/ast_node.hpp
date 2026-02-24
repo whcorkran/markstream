@@ -87,7 +87,7 @@ public:
   }
   bool is_updated() const { return flags_ & NODE_CONTENT_UPDATE; }
   void set_updated(bool v) {
-    v ? flags_ /= NODE_CONTENT_UPDATE : flags_ &= ~NODE_CONTENT_UPDATE;
+    v ? flags_ |= NODE_CONTENT_UPDATE : flags_ &= ~NODE_CONTENT_UPDATE;
   }
 
   // Position
@@ -158,9 +158,9 @@ class ASTIterator {
 public:
   // STL tags
   using iterator_category = std::forward_iterator_tag;
-  using value_type = const ASTNode;
-  using pointer = const ASTNode *;
-  using reference = const ASTNode &;
+  using value_type = ASTNode;
+  using pointer = ASTNode *;
+  using reference = ASTNode &;
 
   explicit ASTIterator(pointer node) : current_(node) {}
 
@@ -195,8 +195,8 @@ private:
 
 public:
   ASTView(ASTNode::Ptr root) : root_(root) {};
-  ASTIterator begin() const { return ASTIterator(root_.get()); }
-  ASTIterator end() const { return ASTIterator(nullptr); }
+  ASTIterator begin() { return ASTIterator(root_.get()); }
+  ASTIterator end() { return ASTIterator(nullptr); }
 };
 
 #endif // AST_NODE_HPP

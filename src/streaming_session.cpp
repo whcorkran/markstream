@@ -36,7 +36,7 @@ void StreamingSession::emit(BlockEvent event) { callback_(event); }
 void StreamingSession::process_tree() {
   ASTView tree(parser_.get_root());
   for (auto it = tree.begin(); it != tree.end(); ++it) {
-    const ASTNode &node = *it;
+    ASTNode &node = *it;
     if (!announced_.contains(&node)) {
       emit(BlockEvent{
           BlockEvent::Open,
