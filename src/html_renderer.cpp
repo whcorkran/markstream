@@ -1,4 +1,14 @@
 #include "html_renderer.hpp"
+#include "inline.hpp"
+
+namespace {
+std::string trim_trailing_newlines(std::string text) {
+  while (!text.empty() && text.back() == '\n') {
+    text.pop_back();
+  }
+  return text;
+}
+}
 
 std::string HtmlRenderer::escape_html(const std::string &text) {
   std::string result;
@@ -116,10 +126,7 @@ void HtmlRenderer::render_node(ASTNode::Ptr node) {
     const std::string &text = node->content();
     if (!text.empty()) {
       std::string content = text;
-      // Trim trailing newline
-      while (!content.empty() && content.back() == '\n') {
-        content.pop_back();
-      }
+      content = trim_trailing_newlines(std::move(content));
       // Trim leading whitespace
       size_t start = 0;
       while (start < content.size() &&
@@ -129,7 +136,7 @@ void HtmlRenderer::render_node(ASTNode::Ptr node) {
       if (start > 0) {
         content = content.substr(start);
       }
-      output_ += escape_html(content);
+      output_ += render_inlines_html(content);
     }
 
     output_ += "</" + tag + ">\n";
@@ -148,12 +155,7 @@ void HtmlRenderer::render_node(ASTNode::Ptr node) {
     output_ += "<p>";
     const std::string &text = node->content();
     if (!text.empty()) {
-      std::string content = text;
-      // Trim trailing newline
-      while (!content.empty() && content.back() == '\n') {
-        content.pop_back();
-      }
-      output_ += escape_html(content);
+      output_ += render_inlines_html(trim_trailing_newlines(text));
     }
     output_ += "</p>\n";
     break;
@@ -178,12 +180,7 @@ void HtmlRenderer::render_list_item(ASTNode::Ptr node,
         // Render paragraph content without <p> tags
         const std::string &text = child->content();
         if (!text.empty()) {
-          std::string content = text;
-          // Trim trailing newline
-          while (!content.empty() && content.back() == '\n') {
-            content.pop_back();
-          }
-          output_ += escape_html(content);
+          output_ += render_inlines_html(trim_trailing_newlines(text));
         }
       } else {
         render_node(child);
