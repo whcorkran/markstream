@@ -6,7 +6,7 @@ A C++20 streaming markdown parser optimized for rendering LLM token streams in r
 
 Data flows in one direction: tokens stream in, the parser updates the AST, events are emitted, and closed blocks are never revisited. This forward-only invariant enables aggressive performance optimizations -- no random access, no back-patching, no retroactive edits to finalized output.
 
-Inline parsing (bold, italic, links, etc.) is not yet implemented. Block structure and streaming support are the current priority; inline parsing will be layered on afterward.
+Inline parsing is now implemented for a core CommonMark subset and integrated into HTML rendering. Current support includes emphasis/strong, code spans, escapes, entities, inline links/images, autolinks, inline HTML passthrough, and soft/hard line breaks. Reference-style links and smart punctuation are not implemented yet.
 
 ## Design Principles
 
@@ -35,10 +35,10 @@ Requires: clang/clang++, C++20, cmake 3.16+. Dependencies fetched automatically 
 
 ### cmark Reference
 
-cmark is fetched via CMake's FetchContent but **is not linked or included by any source file**. It exists purely as a **reference implementation** -- the cmark source (in `build/_deps/cmark-src/src/`) is the canonical fast C implementation of CommonMark and is invaluable for understanding parsing algorithms. Key reference files:
+cmark is fetched via CMake's FetchContent and currently linked by CMake, but **no Markstream source file includes or calls into cmark**. It exists as a **reference implementation** -- the cmark source (in `build/_deps/cmark-src/src/`) is the canonical fast C implementation of CommonMark and is invaluable for understanding parsing algorithms. Key reference files:
 
 - `blocks.c` -- block parsing algorithm (the 3-phase structure our Parser mirrors)
-- `inlines.c` -- inline parsing (delimiter stack algorithm, not yet implemented here)
+- `inlines.c` -- inline parsing reference (Markstream now has a C++ inline parser in `src/inline.cpp`)
 - `scanners.re` -- scanner patterns in re2c format (we implement equivalent logic manually)
 
 Study it freely but do not introduce runtime dependencies on it. The cmark link in CMakeLists.txt should eventually be removed.
@@ -50,6 +50,7 @@ include/
   ast_node.hpp          ASTNode class, vector-based children, metadata, DFS iterator
   parser.hpp            Parser class (3-phase CommonMark block algorithm)
   scanners.hpp          Block-level scanner functions + character utilities
+  inline.hpp            Inline parser entry point (`render_inlines_html`)
   html_renderer.hpp     HTML renderer (renders AST subtrees to HTML)
   events.hpp            BlockEvent struct (Open/Update/Close lifecycle)
   streaming_session.hpp StreamingSession (entry point) + LineBuffer
@@ -58,6 +59,7 @@ src/
   ast_node.cpp          ASTNode::create, ASTIterator::operator++
   parser.cpp            Full 3-phase parsing with try_* block starters
   scanners.cpp          All scanner implementations
+  inline.cpp            Core inline parser + inline HTML renderer
   html_renderer.cpp     HtmlRenderer implementation
   streaming_session.cpp LineBuffer + StreamingSession implementation
   main.cpp              CLI entry point: stdin -> parse -> HTML to stdout
@@ -66,6 +68,8 @@ src/
 tests/
   test_ast_node.cpp     31 ASTNode + 5 ASTIterator tests (vector API)
   test_scanners.cpp     ~40 tests: all scanner functions (working)
+  test_inline.cpp       Inline parsing/rendering tests
+  test_streaming_session.cpp 8 StreamingSession lifecycle/event tests
 
 build/_deps/cmark-src/  Reference cmark source (fetched at build time, not used in code)
 ```
@@ -131,7 +135,13 @@ The public entry point. Owns a LineBuffer, a Parser, and the event dispatch mach
 3. For each line, call `parser_.parse_line()`
 4. After parsing, call `process_tree()` to diff AST state and emit events
 
-**`process_tree()` design:** Walk the AST, compare against the set of already-announced nodes (`announced_`), emit Open for new nodes, Update for nodes with changed content, Close for nodes that lost their `NODE_OPEN` flag. This is a lightweight incremental diff -- not a full tree diff. Because data flows forward only, the diff is simple: new nodes appear, existing nodes gain content, and closed nodes are finalized forever.
+**`process_tree()` design:** Walk the AST, compare against `announced_` and `closed_`, emit Open for newly seen nodes, emit Update for open text blocks with `NODE_CONTENT_UPDATE` set (when `emit_updates_` is enabled), clear the update bit, and emit Close once when a node becomes closed. This is a lightweight incremental diff -- not a full tree diff. Because data flows forward only, the diff is simple: new nodes appear, existing nodes gain content, and closed nodes are finalized forever.
+
+**Lifecycle behavior:**
+- `parse()` throws `std::logic_error` if called after `finish()`.
+- `parse()` throws `std::length_error` if `LineBuffer` exceeds max size.
+- `finish()` is idempotent and flushes any trailing partial line.
+- `reset()` clears parser/buffer/event state and allows reuse.
 
 #### Parser (`src/parser.cpp`)
 
@@ -152,6 +162,8 @@ All `try_*` functions receive an `OpenBlockCtx` struct bundling the mutable pars
 
 **`finalize(node)`:** Closes a block -- clears `NODE_OPEN`, trims trailing blank lines from indented code, determines list tight/loose status.
 
+**End-of-stream hooks:** `finish_document()` finalizes all open blocks and the document root at EOF; `reset()` rebuilds parser state for a new document.
+
 **`open_blocks_` stack:** The parser maintains an explicit `std::vector<ASTNode::Ptr> open_blocks_` stack where `open_blocks_[0]` is the root Document and `open_blocks_.back()` is the deepest open block. This replaces the old parent-pointer walking. Phase 1 iterates the stack to check continuation; `add_child()` and `finalize()` manipulate the stack directly. The `pre_phase2_depth_` member tracks the stack size before phase 2 runs, so phase 3 can distinguish pre-existing unmatched blocks from newly created ones when finalizing.
 
 #### ASTNode (`include/ast_node.hpp`)
@@ -170,19 +182,37 @@ No parent, next, or prev pointers. Navigation up the tree is handled by the Pars
 
 **Metadata:** Type-erased via `std::variant<monostate, ListData, CodeData, HeadingData, int>`. Accessed via `get_data<T>()` / `set_data<T>()`.
 
-**Flags:** `NODE_OPEN` (block still accepting content), `NODE_LAST_LINE_BLANK` (for tight/loose list detection).
+**Flags:** `NODE_OPEN` (block still accepting content), `NODE_LAST_LINE_BLANK` (for tight/loose list detection), `NODE_CONTENT_UPDATE` (content changed since last StreamingSession diff pass).
 
 **Content:** Text stored directly on each node (`std::string content_`). During parsing, `add_line()` appends text. Once the block closes, content is immutable.
 
 **Nine block types:** `Document`, `BlockQuote`, `List`, `Item`, `CodeBlock`, `Heading`, `HtmlBlock`, `Paragraph`, `ThematicBreak`.
 
-**ASTIterator:** STL-compatible forward iterator for DFS preorder traversal. Uses an internal `vector<ChildrenOf>` stack to track position within each node's children vector (no parent pointers needed).
+**ASTIterator:** STL-compatible forward iterator for DFS preorder traversal. Uses an internal `vector<ChildrenOf>` stack to track position within each node's children vector (no parent pointers needed). The current iterator yields mutable nodes, which StreamingSession uses to clear update flags during tree diffing.
 
 #### HtmlRenderer (`src/html_renderer.cpp`)
 
 Stateless renderer that traverses an AST subtree and outputs HTML. Takes an `ASTNode::Ptr` -- no dependency on Parser or StreamingSession. Reads text from `node->content()`.
 
-Handles: tight/loose list rendering, ordered list start attributes, code block language classes (`class="language-X"`), heading levels, HTML block raw passthrough, HTML escaping (`&`, `<`, `>`, `"`), thematic breaks.
+Handles: tight/loose list rendering, ordered list start attributes, code block language classes (`class="language-X"`), heading levels, HTML block raw passthrough, thematic breaks, and inline rendering via `render_inlines_html()` for paragraph/heading/tight-list paragraph text.
+
+#### Inline Parser (`include/inline.hpp`, `src/inline.cpp`)
+
+Standalone inline parser/renderer module inspired by cmark's delimiter-stack algorithm and implemented with cache-friendly C++ vectors.
+
+**Current support:**
+- Emphasis and strong emphasis (`*`, `_`) with flanking and modulo-3 rules
+- Code spans with CommonMark normalization behavior
+- Backslash escapes
+- Entity decoding (named + numeric)
+- Inline links/images (`[text](url "title")`, `![alt](src)`)
+- Autolinks (`<https://...>`, `<user@example.com>`)
+- Inline HTML passthrough
+- Soft/hard line breaks
+
+**Not yet implemented:**
+- Reference-style links (`[text][id]`, `[id]: ...`)
+- Smart punctuation transforms
 
 Consumers are free to use HtmlRenderer to convert closed blocks to HTML, or to implement their own rendering from the event stream and AST node pointers.
 
@@ -195,8 +225,7 @@ struct BlockEvent {
     enum Action : uint8_t { Open, Update, Close };
     Action action;
     NodeType type;
-    uint8_t depth;
-    const ASTNode* node;  // pointer to the node (valid during callback)
+    const ASTNode* node;
 };
 ```
 
@@ -214,19 +243,17 @@ Key scanners: `scan_atx_heading_start`, `scan_setext_heading_line`, `scan_open_c
 
 ## Current State and Known Issues
 
-The vector-based AST refactor (Phase 1) is complete. The codebase compiles cleanly and all 98 tests pass. The parser, renderer, and tests all use the vector children API with no remaining references to the old linked-list API (`parent()`, `next()`, `prev()`, `unlink()`, `append_child()`).
+The vector-based AST refactor (Phase 1), StreamingSession implementation (Phase 2), and core inline parser integration are complete. The codebase compiles cleanly and all 112 tests pass. The parser, renderer, and tests all use the vector children API with no remaining references to the old linked-list API (`parent()`, `next()`, `prev()`, `unlink()`, `append_child()`).
 
 ### Remaining Issues
 
-1. **StreamingSession is mostly unimplemented.** Only `parse()` (processes a single line, should loop), `emit()` (no null check, no queue fallback), and a stub `process_tree()` exist. `finish()`, `reset()`, `pop_event()`, `pop_events()`, `depth_of()`, `render_node()` are declared but undefined (will cause linker errors if called).
+1. **`event.cpp` is empty** and not in the CMakeLists.txt compile list.
 
-2. **`event.cpp` is empty** and not in the CMakeLists.txt compile list.
+2. **`scan_thematic_break` accepts backslash.** Line 273 of `scanners.cpp` allows `\\` between thematic break markers, which is not valid per CommonMark.
 
-3. **`scan_thematic_break` accepts backslash.** Line 273 of `scanners.cpp` allows `\\` between thematic break markers, which is not valid per CommonMark.
+3. **Block renderer escaping helper still incomplete.** `HtmlRenderer::escape_html()` does not escape `'` (single quote). Note: inline rendering paths do escape `'` for attribute contexts.
 
-4. **HTML escaping incomplete.** `escape_html()` does not escape `'` (single quote). Relevant for attribute contexts.
-
-5. **cmark linked unnecessarily.** CMakeLists.txt links cmark via `target_link_libraries` despite no source file including cmark headers. This adds unnecessary build coupling.
+4. **cmark linked unnecessarily.** CMakeLists.txt links cmark via `target_link_libraries` despite no source file including cmark headers. This adds unnecessary build coupling.
 
 ## Implementation Roadmap
 
@@ -241,22 +268,28 @@ The vector-based tree transition is complete:
 - [x] Rewrote ASTIterator `operator++` with correct DFS traversal logic
 - [x] Fixed ASTIterator comparison operators to accept `const` refs
 
-### Phase 2: Implement StreamingSession
+### Phase 2: Implement StreamingSession (DONE)
 
-Build out the full streaming pipeline:
-- `parse()` must loop over all available lines, not just one
-- `process_tree()` must walk the AST and diff against `announced_` set
-- `emit()` must handle both callback and queue dispatch (null-safe)
-- Implement `finish()`, `reset()`, `pop_event()`, `pop_events()`
-- Implement `depth_of()` (walk `open_blocks_` or count ancestors)
+Completed streaming pipeline work:
+- [x] `parse()` loops over all available lines
+- [x] `process_tree()` diffs AST against `announced_` and `closed_`
+- [x] `emit()` handles both callback and queue dispatch (null-safe)
+- [x] Implemented `finish()`, `reset()`, `pop_event()`, `pop_events()`
+- [x] Added parser end-of-stream hooks: `finish_document()` and `reset()`
+- [x] Added dedicated StreamingSession tests
 
 ### Phase 3: Parser Integration Tests
 
 Build a test harness that runs the CommonMark spec test suite (`md_examples/spec.json`, ~652 examples). Parse each example, render to HTML, compare against expected output. This is the ground truth for correctness.
 
-### Phase 4: Inline Parsing
+### Phase 4: Inline Parsing (IN PROGRESS)
 
-Not started. Reference: `build/_deps/cmark-src/src/inlines.c`. The CommonMark delimiter stack algorithm handles emphasis, strong, code spans, links, images. This layers on top of the block structure cleanly -- inline parsing runs on the text content of leaf blocks after they close.
+Core inline parsing is implemented in `src/inline.cpp` and integrated into `HtmlRenderer`. Current implementation covers emphasis/strong, code spans, escapes, entities, inline links/images, autolinks, inline HTML, and line breaks.
+
+Remaining inline work:
+- Reference-style links and reference map integration
+- Smart punctuation parity
+- Full CommonMark conformance validation via spec harness
 
 ## Testing
 
@@ -267,9 +300,10 @@ Not started. Reference: `build/_deps/cmark-src/src/inlines.c`. The CommonMark de
 **Working tests:**
 - `test_scanners.cpp`: ~40 tests covering all scanner functions. No dependency on ASTNode -- these work.
 - `test_ast_node.cpp`: 31 ASTNode tests (creation, flags, position, vector children, content, metadata, memory management, edge cases) + 5 ASTIterator tests (single node, flat children, nested DFS, deep nesting, complex tree).
+- `test_streaming_session.cpp`: 8 tests covering callback/polling dispatch, Update toggle, idempotent finish, close deduplication, reset/reuse, and error behavior.
+- `test_inline.cpp`: core inline parsing/rendering tests (emphasis, code spans, entities/escapes, links/images, autolinks, inline HTML, line breaks).
 
 **Not yet tested:**
 - Parser integration (no spec harness yet)
-- HtmlRenderer output
-- StreamingSession event dispatch
-- LineBuffer edge cases
+- Full CommonMark inline conformance (spec harness not yet wired)
+- LineBuffer stress/edge cases

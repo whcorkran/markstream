@@ -20,6 +20,22 @@ ASTNode::Ptr Parser::get_deepest_open_block() const {
 // check if document has no open nested blocks
 bool Parser::is_complete() const { return open_blocks_.size() <= 1; }
 
+void Parser::finish_document() {
+  finalize_above(1);
+  finalize(root_);
+  open_blocks_.clear();
+  open_blocks_.push_back(root_);
+}
+
+void Parser::reset() {
+  root_ = ASTNode::create(NodeType::Document, 1, 1);
+  root_->set_open(true);
+  open_blocks_.clear();
+  open_blocks_.push_back(root_);
+  current_line_ = 0;
+  pre_phase2_depth_ = 0;
+}
+
 // line processing helpers
 char Parser::peek_at(const std::string &input, size_t pos) const {
   if (pos >= input.size())

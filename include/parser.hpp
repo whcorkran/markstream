@@ -12,6 +12,8 @@ public:
   ~Parser() = default;
 
   void parse_line(std::string_view line);
+  void finish_document();
+  void reset();
 
   ASTNode::Ptr get_root() const { return root_; }
   ASTNode::Ptr get_deepest_open_block() const;

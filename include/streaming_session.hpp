@@ -57,17 +57,17 @@ private:
 // Usage (callback mode):
 //   StreamingSession session([](const BlockEvent& ev) {
 //     if (ev.action == BlockEvent::Update) {
-//       update_ui(ev.html);
+//       update_ui(ev.node);
 //     }
 //   });
 //   for (const auto& token : llm_stream) {
-//     session.feed(token);
+//     session.parse(token);
 //   }
 //   session.finish();
 //
 // Usage (polling mode):
 //   StreamingSession session;
-//   session.feed(tokens);
+//   session.parse(tokens);
 //   while (session.has_events()) {
 //     auto event = session.pop_event();
 //     process(event);
@@ -132,7 +132,7 @@ public:
   // State inspection
   // -------------------------------------------------------------------------
 
-  // Access the underlying parser (for advanced use)
+  // Access the underlying parser
   const Parser &parser() const { return parser_; }
 
   // Check if finish() has been called
@@ -148,6 +148,8 @@ private:
 
   // Track which nodes have had Open events emitted
   std::unordered_set<const ASTNode *> announced_;
+  // Track which nodes have had Close events emitted
+  std::unordered_set<const ASTNode *> closed_;
 
   // Configuration
   bool emit_updates_ = true;
@@ -167,9 +169,6 @@ private:
 
   // Check if node type accepts text content
   bool accepts_text(NodeType type) const;
-
-  // Render a single node to HTML
-  std::string render_node(const ASTNode *node) const;
 };
 
 #endif // STREAMING_SESSION_HPP

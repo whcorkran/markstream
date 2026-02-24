@@ -36,6 +36,7 @@ add_library(markstream_lib STATIC
         src/scanners.cpp
         src/ast_node.cpp
         src/html_renderer.cpp
+        src/inline.cpp
         src/streaming_session.cpp
 )
 
@@ -59,6 +60,8 @@ enable_testing()
 add_executable(markstream_tests
         tests/test_scanners.cpp
         tests/test_ast_node.cpp
+        tests/test_streaming_session.cpp
+        tests/test_inline.cpp
 )
 
 target_link_libraries(markstream_tests PRIVATE
