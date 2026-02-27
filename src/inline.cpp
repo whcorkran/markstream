@@ -704,6 +704,12 @@ std::vector<InlineNode> parse_inlines(std::string_view input, bool allow_links) 
       continue;
     }
 
+    if (c == '[' && !allow_links) {
+      append_text(&nodes, delimiters, "[");
+      i++;
+      continue;
+    }
+
     if ((c == '!' && i + 1 < input.size() && input[i + 1] == '[') ||
         (c == '[' && allow_links)) {
       bool is_image = (c == '!');

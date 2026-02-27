@@ -25,10 +25,16 @@ FetchContent_Declare(
   GIT_TAG        v1.14.0
 )
 
+FetchContent_Declare(
+  json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG        v3.11.3
+)
+
 # Prevent GoogleTest from overriding compiler/linker options
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 
-FetchContent_MakeAvailable(cmark googletest)
+FetchContent_MakeAvailable(cmark googletest json)
 
 # ---- Library for core functionality (shared between main and tests) ----
 add_library(markstream_lib STATIC
@@ -71,3 +77,16 @@ target_link_libraries(markstream_tests PRIVATE
 
 include(GoogleTest)
 gtest_discover_tests(markstream_tests)
+
+# ---- Spec test harness (separate executable for CommonMark spec) ----
+add_executable(markstream_spec_tests
+        tests/test_spec.cpp
+)
+
+target_link_libraries(markstream_spec_tests PRIVATE
+        markstream_lib
+        GTest::gtest_main
+        nlohmann_json::nlohmann_json
+)
+
+gtest_discover_tests(markstream_spec_tests)

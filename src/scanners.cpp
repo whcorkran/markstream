@@ -263,14 +263,15 @@ size_t scan_thematic_break(const std::string &line, size_t offset,
 
     if (is_line_end(c)) {
       break; // Stop at line ending
-    } else if ((c == '*' || c == '-' || c == '_') && found_valid(c, line, pos)) {
+    } else if ((c == '*' || c == '-' || c == '_') &&
+               found_valid(c, line, pos)) {
       if (delim == '\0') {
         delim = c;
       } else if (c != delim) {
         return 0; // Mixed delimiters not allowed
       }
       count++;
-    } else if (is_space_or_tab(c) || c == '\\') {
+    } else if (is_space_or_tab(c)) {
       // Spaces, tabs, and backslashes are allowed between markers
     } else {
       return 0; // Other characters not allowed

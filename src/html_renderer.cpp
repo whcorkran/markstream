@@ -8,7 +8,7 @@ std::string trim_trailing_newlines(std::string text) {
   }
   return text;
 }
-}
+} // namespace
 
 std::string HtmlRenderer::escape_html(const std::string &text) {
   std::string result;
@@ -27,6 +27,9 @@ std::string HtmlRenderer::escape_html(const std::string &text) {
       break;
     case '"':
       result += "&quot;";
+      break;
+    case '\'':
+      result += "&apos;";
       break;
     default:
       result += c;
@@ -167,8 +170,7 @@ void HtmlRenderer::render_node(ASTNode::Ptr node) {
   }
 }
 
-void HtmlRenderer::render_list_item(ASTNode::Ptr node,
-                                    const ListData *list) {
+void HtmlRenderer::render_list_item(ASTNode::Ptr node, const ListData *list) {
   bool tight = list && list->is_tight;
 
   output_ += "<li>";
