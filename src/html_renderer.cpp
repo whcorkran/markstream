@@ -1,13 +1,24 @@
 #include "html_renderer.hpp"
 #include "inline.hpp"
+#include "parser.hpp"
 
 namespace {
-std::string trim_trailing_newlines(std::string text) {
-  while (!text.empty() && text.back() == '\n') {
-    text.pop_back();
-  }
-  return text;
+
+// Trim trailing whitespace from a string_view (no allocation)
+inline std::string_view trim_trailing_ws(std::string_view sv) {
+  while (!sv.empty() &&
+         (sv.back() == '\n' || sv.back() == ' ' || sv.back() == '\t'))
+    sv.remove_suffix(1);
+  return sv;
 }
+
+// Trim leading whitespace from a string_view (no allocation)
+inline std::string_view trim_leading_ws(std::string_view sv) {
+  while (!sv.empty() && (sv[0] == ' ' || sv[0] == '\t'))
+    sv.remove_prefix(1);
+  return sv;
+}
+
 } // namespace
 
 std::string HtmlRenderer::escape_html(const std::string &text) {
@@ -28,9 +39,6 @@ std::string HtmlRenderer::escape_html(const std::string &text) {
     case '"':
       result += "&quot;";
       break;
-    case '\'':
-      result += "&apos;";
-      break;
     default:
       result += c;
     }
@@ -38,8 +46,11 @@ std::string HtmlRenderer::escape_html(const std::string &text) {
   return result;
 }
 
-std::string HtmlRenderer::render(ASTNode::Ptr root) {
+std::string &HtmlRenderer::render(
+    ASTNode::Ptr root,
+    const std::unordered_map<std::string, LinkDef> *link_defs) {
   output_.clear();
+  link_defs_ = link_defs;
   if (root) {
     render_children(root);
   }
@@ -68,7 +79,9 @@ void HtmlRenderer::render_node(ASTNode::Ptr node) {
     const ListData *list = node->get_data<ListData>();
     if (list && list->is_ordered) {
       if (list->start != 1) {
-        output_ += "<ol start=\"" + std::to_string(list->start) + "\">\n";
+        output_ += "<ol start=\"";
+        output_ += std::to_string(list->start);
+        output_ += "\">\n";
       } else {
         output_ += "<ol>\n";
       }
@@ -102,12 +115,14 @@ void HtmlRenderer::render_node(ASTNode::Ptr node) {
 
     if (code && !code->info.empty()) {
       // Extract language (first word of info string)
-      std::string lang = code->info;
+      std::string lang = resolve_escapes_and_entities(code->info);
       size_t space_pos = lang.find(' ');
       if (space_pos != std::string::npos) {
         lang = lang.substr(0, space_pos);
       }
-      output_ += "<pre><code class=\"language-" + escape_html(lang) + "\">";
+      output_ += "<pre><code class=\"language-";
+      output_ += escape_html(lang);
+      output_ += "\">";
     } else {
       output_ += "<pre><code>";
     }
@@ -120,29 +135,23 @@ void HtmlRenderer::render_node(ASTNode::Ptr node) {
   }
 
   case NodeType::Heading: {
+    constexpr const char *h_open[] = {"",     "<h1>", "<h2>", "<h3>",
+                                      "<h4>", "<h5>", "<h6>"};
+    constexpr const char *h_close[] = {"",       "</h1>\n", "</h2>\n",
+                                       "</h3>\n", "</h4>\n", "</h5>\n",
+                                       "</h6>\n"};
     const HeadingData *heading = node->get_data<HeadingData>();
     int level = heading ? heading->level : 1;
-    std::string tag = "h" + std::to_string(level);
 
-    output_ += "<" + tag + ">";
+    output_ += h_open[level];
 
     const std::string &text = node->content();
     if (!text.empty()) {
-      std::string content = text;
-      content = trim_trailing_newlines(std::move(content));
-      // Trim leading whitespace
-      size_t start = 0;
-      while (start < content.size() &&
-             (content[start] == ' ' || content[start] == '\t')) {
-        start++;
-      }
-      if (start > 0) {
-        content = content.substr(start);
-      }
-      output_ += render_inlines_html(content);
+      std::string_view sv = trim_leading_ws(trim_trailing_ws(text));
+      output_ += render_inlines_html(sv, link_defs_);
     }
 
-    output_ += "</" + tag + ">\n";
+    output_ += h_close[level];
     break;
   }
 
@@ -155,11 +164,11 @@ void HtmlRenderer::render_node(ASTNode::Ptr node) {
   }
 
   case NodeType::Paragraph: {
-    output_ += "<p>";
     const std::string &text = node->content();
-    if (!text.empty()) {
-      output_ += render_inlines_html(trim_trailing_newlines(text));
-    }
+    if (text.empty())
+      break; // Skip paragraphs consumed by link ref defs
+    output_ += "<p>";
+    output_ += render_inlines_html(trim_trailing_ws(text), link_defs_);
     output_ += "</p>\n";
     break;
   }
@@ -177,14 +186,16 @@ void HtmlRenderer::render_list_item(ASTNode::Ptr node, const ListData *list) {
 
   if (tight) {
     // Tight list: render children inline, stripping <p> tags
-    for (const auto &child : node->children()) {
+    for (size_t ci = 0; ci < node->children().size(); ci++) {
+      const auto &child = node->children()[ci];
       if (child->type() == NodeType::Paragraph) {
         // Render paragraph content without <p> tags
         const std::string &text = child->content();
         if (!text.empty()) {
-          output_ += render_inlines_html(trim_trailing_newlines(text));
+          output_ += render_inlines_html(trim_trailing_ws(text), link_defs_);
         }
       } else {
+        output_ += "\n";
         render_node(child);
       }
     }

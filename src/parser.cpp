@@ -2,6 +2,7 @@
 #include "ast_node.hpp"
 #include "scanners.hpp"
 #include <algorithm>
+#include <cctype>
 
 #define CODE_INDENT 4
 #define TAB_STOP 4
@@ -34,6 +35,7 @@ void Parser::reset() {
   open_blocks_.push_back(root_);
   current_line_ = 0;
   pre_phase2_depth_ = 0;
+  link_defs_.clear();
 }
 
 // line processing helpers
@@ -150,6 +152,291 @@ ASTNode::Ptr Parser::add_child(ASTNode::Ptr parent, NodeType block_type,
   return child;
 }
 
+// ============================================================================
+// Link reference definition parsing
+// ============================================================================
+
+// Decode one UTF-8 codepoint starting at s[pos].
+// Returns {codepoint, byte_count}. On invalid UTF-8, returns {byte, 1}.
+static std::pair<uint32_t, size_t> decode_utf8(std::string_view s, size_t pos) {
+  unsigned char c = static_cast<unsigned char>(s[pos]);
+  if (c < 0x80) return {c, 1};
+  if ((c & 0xE0) == 0xC0 && pos + 1 < s.size()) {
+    uint32_t cp = (c & 0x1F) << 6 | (static_cast<unsigned char>(s[pos+1]) & 0x3F);
+    return {cp, 2};
+  }
+  if ((c & 0xF0) == 0xE0 && pos + 2 < s.size()) {
+    uint32_t cp = (c & 0x0F) << 12 |
+        (static_cast<unsigned char>(s[pos+1]) & 0x3F) << 6 |
+        (static_cast<unsigned char>(s[pos+2]) & 0x3F);
+    return {cp, 3};
+  }
+  if ((c & 0xF8) == 0xF0 && pos + 3 < s.size()) {
+    uint32_t cp = (c & 0x07) << 18 |
+        (static_cast<unsigned char>(s[pos+1]) & 0x3F) << 12 |
+        (static_cast<unsigned char>(s[pos+2]) & 0x3F) << 6 |
+        (static_cast<unsigned char>(s[pos+3]) & 0x3F);
+    return {cp, 4};
+  }
+  return {c, 1};
+}
+
+// Simple Unicode case folding for common ranges.
+// Returns the lowercase codepoint.
+static uint32_t unicode_tolower(uint32_t cp) {
+  // ASCII
+  if (cp >= 'A' && cp <= 'Z') return cp + 32;
+  // Latin-1 Supplement (À-Ö, Ø-Þ)
+  if (cp >= 0xC0 && cp <= 0xD6) return cp + 32;
+  if (cp >= 0xD8 && cp <= 0xDE) return cp + 32;
+  // Greek (Α-Ρ, Σ-Ω)
+  if (cp >= 0x391 && cp <= 0x3A1) return cp + 32;
+  if (cp >= 0x3A3 && cp <= 0x3A9) return cp + 32;
+  // Cyrillic (А-Я)
+  if (cp >= 0x410 && cp <= 0x42F) return cp + 32;
+  return cp;
+}
+
+// Encode a codepoint as UTF-8
+static std::string encode_utf8_cp(uint32_t cp) {
+  std::string out;
+  if (cp <= 0x7F) {
+    out += static_cast<char>(cp);
+  } else if (cp <= 0x7FF) {
+    out += static_cast<char>(0xC0 | (cp >> 6));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  } else if (cp <= 0xFFFF) {
+    out += static_cast<char>(0xE0 | (cp >> 12));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  } else {
+    out += static_cast<char>(0xF0 | (cp >> 18));
+    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  }
+  return out;
+}
+
+static std::string normalize_label(std::string_view label) {
+  std::string result;
+  size_t start = 0;
+  while (start < label.size() &&
+         (label[start] == ' ' || label[start] == '\t' || label[start] == '\n'))
+    start++;
+  size_t end = label.size();
+  while (end > start &&
+         (label[end - 1] == ' ' || label[end - 1] == '\t' ||
+          label[end - 1] == '\n'))
+    end--;
+
+  bool in_space = false;
+  for (size_t i = start; i < end;) {
+    char c = label[i];
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+      if (!in_space) {
+        result += ' ';
+        in_space = true;
+      }
+      i++;
+    } else {
+      auto [cp, bytes] = decode_utf8(label, i);
+      uint32_t lower = unicode_tolower(cp);
+      result += encode_utf8_cp(lower);
+      in_space = false;
+      i += bytes;
+    }
+  }
+  return result;
+}
+
+// Try to parse a link reference definition starting at position `start`
+// in `content`. Returns the number of characters consumed (0 if failed).
+size_t Parser::try_parse_link_ref_def(const std::string &content, size_t start) {
+  size_t i = start;
+  size_t len = content.size();
+
+  // Skip up to 3 spaces of indentation
+  size_t indent = 0;
+  while (i < len && content[i] == ' ' && indent < 3) {
+    i++;
+    indent++;
+  }
+
+  // Must start with [
+  if (i >= len || content[i] != '[')
+    return 0;
+  i++;
+
+  // Parse label (up to 999 chars, no empty, no unescaped [)
+  size_t label_start = i;
+  int label_len = 0;
+  bool found_close = false;
+  while (i < len && label_len < 1000) {
+    if (content[i] == '\\' && i + 1 < len) {
+      i += 2;
+      label_len += 2;
+      continue;
+    }
+    if (content[i] == '[')
+      return 0;
+    if (content[i] == ']') {
+      found_close = true;
+      break;
+    }
+    i++;
+    label_len++;
+  }
+  if (!found_close)
+    return 0;
+  std::string_view label_raw = std::string_view(content).substr(
+      label_start, i - label_start);
+  std::string label = normalize_label(label_raw);
+  if (label.empty())
+    return 0;
+  i++; // skip ]
+
+  // Must be followed by :
+  if (i >= len || content[i] != ':')
+    return 0;
+  i++; // skip :
+
+  // Optional whitespace (including at most one newline)
+  bool had_newline = false;
+  while (i < len && (content[i] == ' ' || content[i] == '\t')) i++;
+  if (i < len && content[i] == '\n') {
+    i++;
+    had_newline = true;
+    while (i < len && (content[i] == ' ' || content[i] == '\t')) i++;
+  }
+
+  // Parse destination
+  std::string url;
+  if (i >= len || content[i] == '\n')
+    return 0;
+
+  if (content[i] == '<') {
+    // Angle-bracket destination
+    size_t dest_start = i + 1;
+    i++;
+    while (i < len) {
+      if (content[i] == '\\' && i + 1 < len && content[i + 1] != '\n') {
+        i += 2;
+        continue;
+      }
+      if (content[i] == '>') {
+        url = content.substr(dest_start, i - dest_start);
+        i++;
+        break;
+      }
+      if (content[i] == '<' || content[i] == '\n')
+        return 0;
+      i++;
+    }
+    if (url.empty() && (i >= len || content[i - 1] != '>'))
+      return 0; // unclosed <
+    // Handle empty angle-bracket <> case
+    if (i > 0 && content[i - 1] == '>' && dest_start == i - 1) {
+      url = "";
+    }
+  } else {
+    // Bare destination
+    size_t dest_start = i;
+    int paren_depth = 0;
+    while (i < len) {
+      char c = content[i];
+      if (c == '\\' && i + 1 < len && content[i + 1] != '\n') {
+        i += 2;
+        continue;
+      }
+      if (c == ' ' || c == '\t' || c == '\n' || (c == ')' && paren_depth == 0))
+        break;
+      if (c == '(') paren_depth++;
+      else if (c == ')') paren_depth--;
+      i++;
+    }
+    if (i == dest_start)
+      return 0;
+    url = content.substr(dest_start, i - dest_start);
+  }
+
+  // Check for optional title
+  std::string title;
+  size_t before_title = i;
+
+  // Skip whitespace before title
+  bool title_had_newline = false;
+  while (i < len && (content[i] == ' ' || content[i] == '\t')) i++;
+  if (i < len && content[i] == '\n') {
+    i++;
+    title_had_newline = true;
+    while (i < len && (content[i] == ' ' || content[i] == '\t')) i++;
+  }
+
+  bool has_title = false;
+  bool had_ws_before_title = (i != before_title);
+  if (had_ws_before_title && i < len &&
+      (content[i] == '"' || content[i] == '\'' || content[i] == '(')) {
+    char opener = content[i];
+    char closer = (opener == '(') ? ')' : opener;
+    size_t title_start = i + 1;
+    i++;
+    bool found_closer = false;
+    while (i < len) {
+      if (content[i] == '\\' && i + 1 < len) {
+        i += 2;
+        continue;
+      }
+      if (content[i] == closer) {
+        title = content.substr(title_start, i - title_start);
+        i++;
+        has_title = true;
+        found_closer = true;
+        break;
+      }
+      if (content[i] == '\n' && opener != '(' && closer != ')') {
+        // Titles can span lines
+      }
+      i++;
+    }
+    if (!found_closer) {
+      // Title not closed, backtrack
+      i = before_title;
+      has_title = false;
+    }
+  } else {
+    // No title — backtrack to before title whitespace
+    i = before_title;
+  }
+
+  // After destination (and optional title), must be end of line or end of string
+  // Skip trailing spaces
+  while (i < len && (content[i] == ' ' || content[i] == '\t')) i++;
+  if (i < len && content[i] != '\n') {
+    // Not a valid def if there's non-whitespace remaining on the line
+    // Try without title
+    if (has_title) {
+      i = before_title;
+      has_title = false;
+      title.clear();
+      while (i < len && (content[i] == ' ' || content[i] == '\t')) i++;
+      if (i < len && content[i] != '\n')
+        return 0;
+    } else {
+      return 0;
+    }
+  }
+  if (i < len && content[i] == '\n')
+    i++;
+
+  // Store definition (first one wins)
+  if (link_defs_.find(label) == link_defs_.end()) {
+    link_defs_[label] = LinkDef{std::move(url), std::move(title)};
+  }
+
+  return i - start;
+}
+
 // Finalize a single block: close it, perform type-specific cleanup.
 // The caller is responsible for popping from open_blocks_ when appropriate.
 void Parser::finalize(ASTNode::Ptr b) {
@@ -169,13 +456,38 @@ void Parser::finalize(ASTNode::Ptr b) {
   case NodeType::CodeBlock: {
     const CodeData *code = b->get_data<CodeData>();
     if (code && !code->is_fenced()) {
-      // Indented code: remove trailing blank lines
+      // Indented code: remove trailing blank lines only (not trailing spaces
+      // on the last content line)
       std::string &text = const_cast<std::string &>(b->content());
-      while (!text.empty() && (text.back() == ' ' || text.back() == '\t' ||
-                               text.back() == '\n' || text.back() == '\r')) {
-        text.pop_back();
+      // Find last non-blank line
+      size_t end = text.size();
+      while (end > 0) {
+        // Find start of last line
+        size_t line_start;
+        if (end >= 2) {
+          size_t pos = text.rfind('\n', end - 2);
+          line_start = (pos == std::string::npos) ? 0 : pos + 1;
+        } else {
+          line_start = 0;
+        }
+        // Check if this line (from line_start to end-1, excluding the \n at
+        // end-1) is blank
+        bool blank = true;
+        for (size_t k = line_start; k + 1 < end; k++) {
+          if (text[k] != ' ' && text[k] != '\t') {
+            blank = false;
+            break;
+          }
+        }
+        if (!blank)
+          break;
+        end = line_start;
       }
-      text += '\n';
+      if (end < text.size()) {
+        text.resize(end);
+      }
+      if (text.empty() || text.back() != '\n')
+        text += '\n';
     }
     break;
   }
@@ -209,6 +521,28 @@ void Parser::finalize(ASTNode::Ptr b) {
         }
         if (!list_data->is_tight)
           break;
+      }
+    }
+    break;
+  }
+
+  case NodeType::Paragraph: {
+    // Try to extract link reference definitions from the start
+    std::string &text = const_cast<std::string &>(b->content());
+    size_t pos = 0;
+    while (pos < text.size()) {
+      size_t consumed = try_parse_link_ref_def(text, pos);
+      if (consumed == 0)
+        break;
+      pos += consumed;
+    }
+    if (pos > 0) {
+      if (pos >= text.size()) {
+        // Entire paragraph was link ref defs — mark content empty.
+        // The node will be skipped during rendering (empty content).
+        text.clear();
+      } else {
+        text = text.substr(pos);
       }
     }
     break;
@@ -361,21 +695,20 @@ void Parser::add_line(ASTNode::Ptr target, const std::string &line,
                       bool partially_consumed_tab) {
   if (partially_consumed_tab) {
     offset += 1; // skip over tab
-    // add space characters
     size_t chars_to_tab = TAB_STOP - (column % TAB_STOP);
-    for (size_t i = 0; i < chars_to_tab; i++) {
-      target->append_content(" ");
-    }
+    constexpr char spaces[] = "   "; // max 3 spaces (TAB_STOP=4, min 1)
+    target->append_content(std::string_view(spaces, chars_to_tab));
   }
 
   if (offset < line.size()) {
-    target->append_content(line.substr(offset));
+    target->append_content(std::string_view(line).substr(offset));
   }
 }
 
 void Parser::chop_trailing_hashtags(std::string &line) const {
-  // Remove trailing spaces
-  while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) {
+  // Remove trailing newlines/spaces/tabs
+  while (!line.empty() && (line.back() == ' ' || line.back() == '\t' ||
+                           line.back() == '\n' || line.back() == '\r')) {
     line.pop_back();
   }
 
@@ -387,14 +720,21 @@ void Parser::chop_trailing_hashtags(std::string &line) const {
     n--;
   }
 
-  // Check for space before the final #
-  if (n != orig_n && n > 0 && scan::is_space_or_tab(line[n - 1])) {
-    line.erase(n - 1);
-    // Remove trailing spaces again
-    while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) {
-      line.pop_back();
+  // Check for space before the final # (or entire content is #)
+  if (n != orig_n && (n == 0 || scan::is_space_or_tab(line[n - 1]))) {
+    if (n == 0) {
+      line.clear();
+    } else {
+      line.resize(n - 1);
+      // Remove trailing spaces again
+      while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) {
+        line.pop_back();
+      }
     }
   }
+
+  // Add back the newline
+  line += '\n';
 }
 
 // ============================================================================
@@ -671,7 +1011,7 @@ Parser::BlockStart Parser::try_list_item(OpenBlockCtx &ctx) {
   ldata.is_ordered = list_info.is_ordered;
   ldata.start = list_info.start_number;
   ldata.marker_offset = ctx.fn.indent;
-  ldata.padding = static_cast<int>(list_info.padding);
+  ldata.padding = static_cast<int>(list_info.marker_width);
   ldata.is_tight = true;
 
   // Check if we need a new list or can continue existing
@@ -790,9 +1130,12 @@ void Parser::add_text_to_container(ASTNode::Ptr container,
 
   container->set_last_line_blank(fn.blank && is_blank_allowed);
 
-  // Clear last_line_blank on all ancestors using open_blocks_ stack
-  for (size_t i = 0; i + 1 < open_blocks_.size(); i++) {
-    open_blocks_[i]->set_last_line_blank(false);
+  // Propagate: all ancestor containers are not blank on this line
+  // (they contain content through their descendants)
+  for (auto &ob : open_blocks_) {
+    if (ob != container) {
+      ob->set_last_line_blank(false);
+    }
   }
 
   // Lazy continuation check: if the deepest open block (from before phase 2)
@@ -801,6 +1144,8 @@ void Parser::add_text_to_container(ASTNode::Ptr container,
   if (deepest_before_new != last_matched_container &&
       container == last_matched_container && !fn.blank && deepest_before_new &&
       deepest_before_new->type() == NodeType::Paragraph) {
+    advance_offset(line, offset, column, fn.offset - offset, false,
+                   partially_consumed_tab);
     add_line(deepest_before_new, line, offset, column, partially_consumed_tab);
   } else {
     // Finalize any remaining unmatched blocks that are still open.
@@ -870,10 +1215,9 @@ void Parser::add_text_to_container(ASTNode::Ptr container,
     } else if (accepts_lines(container_type)) {
       const HeadingData *heading = container->get_data<HeadingData>();
       if (container_type == NodeType::Heading && heading && !heading->setext) {
-        // ATX heading - chop trailing hashtags
-        std::string line_copy = line;
-        chop_trailing_hashtags(line_copy);
-        add_line(container, line_copy, fn.offset, fn.column, false);
+        // ATX heading - chop trailing hashtags in-place (line is line_buffer_)
+        chop_trailing_hashtags(line_buffer_);
+        add_line(container, line_buffer_, fn.offset, fn.column, false);
       } else {
         advance_offset(line, offset, column, fn.offset - offset, false,
                        partially_consumed_tab);
@@ -895,11 +1239,11 @@ void Parser::add_text_to_container(ASTNode::Ptr container,
 // ============================================================================
 
 void Parser::parse_line(std::string_view line) {
-  std::string curline(line);
+  line_buffer_.assign(line);
 
   // Ensure line ends with newline
-  if (curline.empty() || !scan::is_line_end(curline.back())) {
-    curline += '\n';
+  if (line_buffer_.empty() || !scan::is_line_end(line_buffer_.back())) {
+    line_buffer_ += '\n';
   }
 
   current_line_++;
@@ -911,7 +1255,7 @@ void Parser::parse_line(std::string_view line) {
 
   bool all_matched = true;
   ASTNode::Ptr last_matched_container = check_open_blocks(
-      curline, &all_matched, offset, column, partially_consumed_tab);
+      line_buffer_, &all_matched, offset, column, partially_consumed_tab);
 
   if (last_matched_container) {
     // Save the deepest open block and stack depth before phase 2 creates
@@ -921,11 +1265,12 @@ void Parser::parse_line(std::string_view line) {
     pre_phase2_depth_ = open_blocks_.size();
 
     ASTNode::Ptr container = last_matched_container;
-    open_new_blocks(&container, curline, all_matched, offset, column,
+    open_new_blocks(&container, line_buffer_, all_matched, offset, column,
                     partially_consumed_tab);
 
-    FirstNonspace fn = find_first_nonspace(curline, offset, column);
+    FirstNonspace fn = find_first_nonspace(line_buffer_, offset, column);
     add_text_to_container(container, last_matched_container, deepest_before_new,
-                          curline, offset, column, partially_consumed_tab, fn);
+                          line_buffer_, offset, column, partially_consumed_tab,
+                          fn);
   }
 }

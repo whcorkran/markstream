@@ -10,7 +10,6 @@
 #include <queue>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 #include <vector>
 
 // Callback type for immediate event dispatch
@@ -109,6 +108,7 @@ public:
 
   // Check if there are queued events
   bool has_events() const { return !event_queue_.empty(); }
+  size_t num_events() const { return event_queue_.size(); }
 
   // Pop single event (precondition: has_events())
   BlockEvent pop_event();
@@ -146,10 +146,8 @@ private:
   EventCallback callback_;
   std::queue<BlockEvent> event_queue_;
 
-  // Track which nodes have had Open events emitted
-  std::unordered_set<const ASTNode *> announced_;
-  // Track which nodes have had Close events emitted
-  std::unordered_set<const ASTNode *> closed_;
+  // Node tracking now uses NODE_ANNOUNCED / NODE_CLOSE_EMITTED flags
+  // directly on ASTNode (O(1) bitwise ops, no heap allocation)
 
   // Configuration
   bool emit_updates_ = true;

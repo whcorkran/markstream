@@ -4,7 +4,13 @@
 #include "ast_node.hpp"
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
+
+struct LinkDef {
+  std::string url;
+  std::string title;
+};
 
 class Parser {
 public:
@@ -19,6 +25,10 @@ public:
   ASTNode::Ptr get_deepest_open_block() const;
   bool is_complete() const;
 
+  const std::unordered_map<std::string, LinkDef> &link_definitions() const {
+    return link_defs_;
+  }
+
   // Access the open blocks stack (for StreamingSession depth queries)
   const std::vector<ASTNode::Ptr> &open_blocks() const {
     return open_blocks_;
@@ -27,6 +37,7 @@ public:
 private:
   ASTNode::Ptr root_;
   int current_line_ = 0;
+  std::unordered_map<std::string, LinkDef> link_defs_;
 
   // Explicit stack of open blocks: open_blocks_[0] is root,
   // open_blocks_.back() is the deepest open block.
@@ -36,6 +47,9 @@ private:
   // Stack depth saved before phase 2 runs, so phase 3 knows which blocks
   // were pre-existing (and thus eligible for finalization) vs newly created.
   size_t pre_phase2_depth_ = 0;
+
+  // Reusable buffer for parse_line() — avoids per-line allocation after first call
+  std::string line_buffer_;
 
   // Line processing helpers
   struct FirstNonspace {
@@ -125,6 +139,9 @@ private:
   // Text accumulation
   void add_line(ASTNode::Ptr target, const std::string &line, size_t offset,
                 size_t column, bool partially_consumed_tab);
+
+  // Link reference definitions
+  size_t try_parse_link_ref_def(const std::string &content, size_t start);
 
   // Utility
   char peek_at(const std::string &input, size_t pos) const;

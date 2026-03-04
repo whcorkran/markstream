@@ -53,7 +53,9 @@ struct HeadingData {
 enum NodeFlags : uint16_t {
   NODE_OPEN = 1 << 0,
   NODE_LAST_LINE_BLANK = 1 << 1,
-  NODE_CONTENT_UPDATE = 1 << 2
+  NODE_CONTENT_UPDATE = 1 << 2,
+  NODE_ANNOUNCED = 1 << 3,
+  NODE_CLOSE_EMITTED = 1 << 4,
 };
 
 class ASTNode : public std::enable_shared_from_this<ASTNode> {
@@ -89,6 +91,14 @@ public:
   void set_updated(bool v) {
     v ? flags_ |= NODE_CONTENT_UPDATE : flags_ &= ~NODE_CONTENT_UPDATE;
   }
+  bool is_announced() const { return flags_ & NODE_ANNOUNCED; }
+  void set_announced(bool v) {
+    v ? flags_ |= NODE_ANNOUNCED : flags_ &= ~NODE_ANNOUNCED;
+  }
+  bool is_close_emitted() const { return flags_ & NODE_CLOSE_EMITTED; }
+  void set_close_emitted(bool v) {
+    v ? flags_ |= NODE_CLOSE_EMITTED : flags_ &= ~NODE_CLOSE_EMITTED;
+  }
 
   // Position
   int start_line() const { return start_line_; }
@@ -118,6 +128,14 @@ public:
   void replace_last_child(Ptr child) {
     children_.pop_back();
     children_.push_back(child);
+  }
+  void remove_child(Ptr child) {
+    for (auto it = children_.begin(); it != children_.end(); ++it) {
+      if (*it == child) {
+        children_.erase(it);
+        return;
+      }
+    }
   }
 
   // Metadata access

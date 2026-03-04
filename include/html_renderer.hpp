@@ -3,16 +3,25 @@
 
 #include "ast_node.hpp"
 #include <string>
+#include <string_view>
+#include <unordered_map>
+
+struct LinkDef;
 
 // Simple HTML renderer for testing against CommonMark spec
 class HtmlRenderer {
 public:
   explicit HtmlRenderer() = default;
 
-  std::string render(ASTNode::Ptr root);
+  std::string &
+  render(ASTNode::Ptr root,
+         const std::unordered_map<std::string, LinkDef> *link_defs = nullptr);
+
+  std::string_view view() { return std::string_view(output_); }
 
 private:
   std::string output_;
+  const std::unordered_map<std::string, LinkDef> *link_defs_ = nullptr;
 
   void render_node(ASTNode::Ptr node);
   void render_children(ASTNode::Ptr node);

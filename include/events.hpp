@@ -18,17 +18,4 @@ struct BlockEvent {
   const ASTNode *node;
 };
 
-// Event type helpers
-inline bool is_open_event(const BlockEvent &ev) {
-  return ev.action == BlockEvent::Open;
-}
-
-inline bool is_close_event(const BlockEvent &ev) {
-  return ev.action == BlockEvent::Close;
-}
-
-inline bool is_update_event(const BlockEvent &ev) {
-  return ev.action == BlockEvent::Update;
-}
-
 #endif // EVENTS_HPP

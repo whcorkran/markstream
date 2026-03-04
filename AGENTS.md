@@ -10,7 +10,7 @@ Inline parsing is now implemented for a core CommonMark subset and integrated in
 
 ## Design Principles
 
-1. **CommonMark compliance.** The block parsing algorithm follows the CommonMark spec. Full spec compliance is the target (currently block-level only).
+1. **CommonMark compliance.** The parsing algorithm follows the CommonMark spec. Currently 67.8% of the 652 spec examples pass. Full spec compliance is the target.
 
 2. **Forward-only data flow.** Tokens arrive, the AST is updated, events fire. Closed blocks are immutable. The program never looks backward to edit finalized state. Data structures and algorithms exploit this constraint for performance.
 
@@ -27,11 +27,12 @@ Inline parsing is now implemented for a core CommonMark subset and integrated in
 ```bash
 cmake -S . -B build
 cmake --build build
-./build/markstream          # reads stdin, parses line-by-line, outputs HTML
-./build/markstream_tests    # runs all tests
+./build/markstream              # reads stdin, parses line-by-line, outputs HTML
+./build/markstream_tests        # runs all unit tests (112 tests)
+./build/markstream_spec_tests   # runs CommonMark spec suite (652 examples)
 ```
 
-Requires: clang/clang++, C++20, cmake 3.16+. Dependencies fetched automatically (googletest). cmark is fetched as a reference implementation only (see below).
+Requires: clang/clang++, C++20, cmake 3.16+. Dependencies fetched automatically (googletest, nlohmann/json). cmark is fetched as a reference implementation only (see below).
 
 ### cmark Reference
 
@@ -63,13 +64,17 @@ src/
   html_renderer.cpp     HtmlRenderer implementation
   streaming_session.cpp LineBuffer + StreamingSession implementation
   main.cpp              CLI entry point: stdin -> parse -> HTML to stdout
-  event.cpp             Empty placeholder (not compiled)
 
 tests/
   test_ast_node.cpp     31 ASTNode + 5 ASTIterator tests (vector API)
   test_scanners.cpp     ~40 tests: all scanner functions (working)
-  test_inline.cpp       Inline parsing/rendering tests
+  test_inline.cpp       Inline parsing/rendering tests (6 tests)
   test_streaming_session.cpp 8 StreamingSession lifecycle/event tests
+  test_spec.cpp         CommonMark spec harness (652 examples from spec.json)
+
+md_examples/
+  spec.json             CommonMark spec test suite (~652 examples)
+  block_test.md         Manual block-level test document
 
 build/_deps/cmark-src/  Reference cmark source (fetched at build time, not used in code)
 ```
@@ -243,17 +248,25 @@ Key scanners: `scan_atx_heading_start`, `scan_setext_heading_line`, `scan_open_c
 
 ## Current State and Known Issues
 
-The vector-based AST refactor (Phase 1), StreamingSession implementation (Phase 2), and core inline parser integration are complete. The codebase compiles cleanly and all 112 tests pass. The parser, renderer, and tests all use the vector children API with no remaining references to the old linked-list API (`parent()`, `next()`, `prev()`, `unlink()`, `append_child()`).
+The vector-based AST refactor (Phase 1), StreamingSession implementation (Phase 2), core inline parser integration (Phase 4), and the CommonMark spec test harness (Phase 3) are complete. The codebase compiles cleanly, all 112 unit tests pass, and the spec harness runs all 652 CommonMark examples.
+
+**Spec results: 442 passed, 210 failed (4 timed out) out of 652 examples (67.8% pass rate).**
+
+Sections with full or near-full pass rates: fenced code blocks (29/29), blank lines (1/1), soft line breaks (2/2), inlines (1/1), precedence (1/1), block quotes (24/25), indented code blocks (11/12), paragraphs (7/8).
+
+Primary failure areas: links (27/90 pass -- reference links unimplemented), link reference definitions (6/27 -- entirely unimplemented), list items (22/48), lists (9/26), images (7/22), raw HTML (10/20), emphasis edge cases (117/132).
 
 ### Remaining Issues
 
-1. **`event.cpp` is empty** and not in the CMakeLists.txt compile list.
+1. **cmark linked unnecessarily.** CMakeLists.txt links cmark via `target_link_libraries` despite no source file including cmark headers. This adds unnecessary build coupling.
 
-2. **`scan_thematic_break` accepts backslash.** Line 273 of `scanners.cpp` allows `\\` between thematic break markers, which is not valid per CommonMark.
+2. **Reference-style links entirely unimplemented.** This is the single largest source of spec failures. Link reference definitions are not parsed, and `[text][id]` / `[text][]` / `[text]` shortcut syntax is not resolved. This affects the Links, Link reference definitions, and Images sections heavily.
 
-3. **Block renderer escaping helper still incomplete.** `HtmlRenderer::escape_html()` does not escape `'` (single quote). Note: inline rendering paths do escape `'` for attribute contexts.
+3. **List item edge cases.** 26 failures in list items and 17 in lists -- likely related to continuation/indentation edge cases, lazy continuation across list boundaries, and blank line handling within lists.
 
-4. **cmark linked unnecessarily.** CMakeLists.txt links cmark via `target_link_libraries` despite no source file including cmark headers. This adds unnecessary build coupling.
+4. **Raw HTML inline gaps.** 10 failures in the Raw HTML section -- the inline HTML passthrough does not cover all CommonMark inline HTML constructs.
+
+5. **4 spec examples cause timeouts.** These likely involve patterns that trigger worst-case behavior in the inline parser (e.g., deeply nested emphasis or unresolved bracket runs).
 
 ## Implementation Roadmap
 
@@ -278,32 +291,49 @@ Completed streaming pipeline work:
 - [x] Added parser end-of-stream hooks: `finish_document()` and `reset()`
 - [x] Added dedicated StreamingSession tests
 
-### Phase 3: Parser Integration Tests
+### Phase 3: Parser Integration Tests (DONE)
 
-Build a test harness that runs the CommonMark spec test suite (`md_examples/spec.json`, ~652 examples). Parse each example, render to HTML, compare against expected output. This is the ground truth for correctness.
+The CommonMark spec test harness is implemented in `tests/test_spec.cpp` as a separate executable (`markstream_spec_tests`). It loads all ~652 examples from `md_examples/spec.json`, parses each through StreamingSession, renders via HtmlRenderer, and compares against expected output. Features per-example timeout (500ms) to guard against infinite loops, per-section pass/fail summary table, and capped per-failure detail output. Uses nlohmann/json (fetched via CMake FetchContent).
 
-### Phase 4: Inline Parsing (IN PROGRESS)
+### Phase 4: Inline Parsing (DONE -- core subset)
 
 Core inline parsing is implemented in `src/inline.cpp` and integrated into `HtmlRenderer`. Current implementation covers emphasis/strong, code spans, escapes, entities, inline links/images, autolinks, inline HTML, and line breaks.
 
-Remaining inline work:
-- Reference-style links and reference map integration
-- Smart punctuation parity
-- Full CommonMark conformance validation via spec harness
+### Phase 5: Spec Conformance (NEXT)
+
+Current pass rate is 442/652 (67.8%). The major areas of work to improve conformance, in priority order:
+
+1. **Reference-style links and link reference definitions.** This is the biggest single feature gap. Requires:
+   - Parsing link reference definitions during block parsing (they are paragraph-like but consumed rather than rendered)
+   - Building a reference map (label -> url, title)
+   - Resolving `[text][label]`, `[text][]`, and `[text]` shortcut links during inline parsing
+   - This will also fix many Images failures (images use the same reference syntax)
+
+2. **List item / list conformance.** 43 combined failures. Needs investigation into continuation, indentation, blank line, and tight/loose edge cases.
+
+3. **Raw HTML inline coverage.** 10 failures. The inline HTML passthrough needs to handle more CommonMark inline HTML constructs.
+
+4. **Timeout investigations.** 4 examples cause timeouts -- likely pathological emphasis/bracket patterns that need backtracking limits or optimization.
+
+5. **Miscellaneous block/inline edge cases.** Remaining failures across tabs, backslash escapes, entities, ATX/setext headings, thematic breaks, hard line breaks, and emphasis edge cases.
 
 ## Testing
 
 ```bash
-./build/markstream_tests    # runs all tests
+./build/markstream_tests        # unit tests (112 tests, all passing)
+./build/markstream_spec_tests   # CommonMark spec suite (652 examples, 442 passing)
 ```
 
-**Working tests:**
-- `test_scanners.cpp`: ~40 tests covering all scanner functions. No dependency on ASTNode -- these work.
+**Unit tests (markstream_tests):**
+- `test_scanners.cpp`: ~40 tests covering all scanner functions. No dependency on ASTNode.
 - `test_ast_node.cpp`: 31 ASTNode tests (creation, flags, position, vector children, content, metadata, memory management, edge cases) + 5 ASTIterator tests (single node, flat children, nested DFS, deep nesting, complex tree).
 - `test_streaming_session.cpp`: 8 tests covering callback/polling dispatch, Update toggle, idempotent finish, close deduplication, reset/reuse, and error behavior.
-- `test_inline.cpp`: core inline parsing/rendering tests (emphasis, code spans, entities/escapes, links/images, autolinks, inline HTML, line breaks).
+- `test_inline.cpp`: 6 inline parsing/rendering tests (emphasis, code spans, entities/escapes, links/images, autolinks, inline HTML, line breaks).
+
+**Spec harness (markstream_spec_tests):**
+- Runs all 652 CommonMark spec examples with per-example timeout protection.
+- Outputs per-section pass/fail summary and capped failure details.
+- Current: 442 passed, 210 failed (4 timed out). See "Current State" section for breakdown.
 
 **Not yet tested:**
-- Parser integration (no spec harness yet)
-- Full CommonMark inline conformance (spec harness not yet wired)
 - LineBuffer stress/edge cases

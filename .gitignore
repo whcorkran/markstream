@@ -1,6 +1,7 @@
 commonmark-spec
 build
 _deps
+emsdk
 
 CMakeFiles
 CMakeCache.txt

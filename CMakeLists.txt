@@ -6,35 +6,7 @@ project(Markstream LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-
-# ---- Fetch dependencies ----
-include(FetchContent)
-
-FetchContent_Declare(
-  cmark
-  GIT_REPOSITORY https://github.com/commonmark/cmark.git
-  GIT_TAG        master
-)
-
-FetchContent_Declare(
-  googletest
-  GIT_REPOSITORY https://github.com/google/googletest.git
-  GIT_TAG        v1.14.0
-)
-
-FetchContent_Declare(
-  json
-  GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG        v3.11.3
-)
-
-# Prevent GoogleTest from overriding compiler/linker options
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-
-FetchContent_MakeAvailable(cmark googletest json)
 
 # ---- Library for core functionality (shared between main and tests) ----
 add_library(markstream_lib STATIC
@@ -48,45 +20,61 @@ add_library(markstream_lib STATIC
 
 target_include_directories(markstream_lib PUBLIC
   include
-  ${cmark_SOURCE_DIR}/include
-  ${cmark_SOURCE_DIR}/src
-  ${cmark_BINARY_DIR}/src
 )
-
-target_link_libraries(markstream_lib PUBLIC cmark)
 
 # ---- Main executable ----
 add_executable(markstream src/main.cpp)
 
 target_link_libraries(markstream PRIVATE markstream_lib)
 
-# ---- Testing ----
-enable_testing()
+# ---- Testing (opt-in via -DMARKSTREAM_TESTS=ON) ----
+option(MARKSTREAM_TESTS "Build tests" OFF)
 
-add_executable(markstream_tests
-        tests/test_scanners.cpp
-        tests/test_ast_node.cpp
-        tests/test_streaming_session.cpp
-        tests/test_inline.cpp
-)
+if(MARKSTREAM_TESTS)
+  include(FetchContent)
 
-target_link_libraries(markstream_tests PRIVATE
-        markstream_lib
-        GTest::gtest_main
-)
+  FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG        v1.14.0
+  )
 
-include(GoogleTest)
-gtest_discover_tests(markstream_tests)
+  FetchContent_Declare(
+    json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.11.3
+  )
 
-# ---- Spec test harness (separate executable for CommonMark spec) ----
-add_executable(markstream_spec_tests
-        tests/test_spec.cpp
-)
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(googletest json)
 
-target_link_libraries(markstream_spec_tests PRIVATE
-        markstream_lib
-        GTest::gtest_main
-        nlohmann_json::nlohmann_json
-)
+  enable_testing()
 
-gtest_discover_tests(markstream_spec_tests)
+  add_executable(markstream_tests
+          tests/test_scanners.cpp
+          tests/test_ast_node.cpp
+          tests/test_streaming_session.cpp
+          tests/test_inline.cpp
+  )
+
+  target_link_libraries(markstream_tests PRIVATE
+          markstream_lib
+          GTest::gtest_main
+  )
+
+  include(GoogleTest)
+  gtest_discover_tests(markstream_tests)
+
+  # ---- Spec test harness ----
+  add_executable(markstream_spec_tests
+          tests/test_spec.cpp
+  )
+
+  target_link_libraries(markstream_spec_tests PRIVATE
+          markstream_lib
+          GTest::gtest_main
+          nlohmann_json::nlohmann_json
+  )
+
+  gtest_discover_tests(markstream_spec_tests)
+endif()

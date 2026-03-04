@@ -49,13 +49,13 @@ void StreamingSession::process_tree() {
   ASTView tree(parser_.get_root());
   for (auto it = tree.begin(); it != tree.end(); ++it) {
     ASTNode &node = *it;
-    if (!announced_.contains(&node)) {
+    if (!node.is_announced()) {
       emit(BlockEvent{
           BlockEvent::Open,
           node.type(),
           &node,
       });
-      announced_.insert(&node);
+      node.set_announced(true);
     }
 
     if (node.is_updated()) {
@@ -69,13 +69,13 @@ void StreamingSession::process_tree() {
       node.set_updated(false);
     }
 
-    if (!node.is_open() && !closed_.contains(&node)) {
+    if (!node.is_open() && !node.is_close_emitted()) {
       emit(BlockEvent{
           BlockEvent::Close,
           node.type(),
           &node,
       });
-      closed_.insert(&node);
+      node.set_close_emitted(true);
     }
   }
 }
@@ -120,8 +120,8 @@ void StreamingSession::reset() {
     event_queue_.pop();
   }
 
-  announced_.clear();
-  closed_.clear();
+  // Node flags (NODE_ANNOUNCED, NODE_CLOSE_EMITTED) are reset implicitly
+  // when parser_.reset() creates fresh nodes.
   finished_ = false;
 }
 

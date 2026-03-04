@@ -84,7 +84,8 @@ static std::string parse_and_render(const std::string &markdown) {
     session.parse(markdown);
     session.finish();
     HtmlRenderer renderer;
-    return renderer.render(session.parser().get_root());
+    return renderer.render(session.parser().get_root(),
+                           &session.parser().link_definitions());
 }
 
 // Run parse_and_render with a wall-clock timeout.

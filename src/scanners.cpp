@@ -1,4 +1,5 @@
 #include "scanners.hpp"
+#include <algorithm>
 #include <cstring>
 
 // ============================================================================
@@ -355,17 +356,18 @@ size_t scan_list_marker(const std::string &line, size_t offset,
   }
 
   // Marker must be followed by at least one space/tab, or end of line
-  if (pos >= line.size()) {
+  if (pos >= line.size() || line[pos] == '\n' || line[pos] == '\r') {
     // Empty list item (just marker at end of line)
+    size_t marker_chars = pos - offset;
     if (out_info) {
       out_info->marker_char = marker_char;
       out_info->is_ordered = is_ordered;
       out_info->start_number = start_number;
-      out_info->marker_width = pos - offset;
+      out_info->marker_width = marker_chars + 1; // +1 virtual space
       out_info->content_offset = pos;
       out_info->padding = 0;
     }
-    return pos - offset;
+    return marker_chars;
   }
 
   if (!is_space_or_tab(line[pos]))
@@ -680,15 +682,14 @@ bool scan_html_block_end(const std::string &line, size_t offset,
   switch (type) {
   case HtmlBlockType::Type1: {
     // Ends when line contains </script>, </pre>, </style>, or </textarea>
-    std::string lower;
-    lower.reserve(line.size());
-    for (char c : line)
-      lower += to_lower(c);
-
-    return lower.find("</script>") != std::string::npos ||
-           lower.find("</pre>") != std::string::npos ||
-           lower.find("</style>") != std::string::npos ||
-           lower.find("</textarea>") != std::string::npos;
+    auto find_ci = [](const std::string &hay, const char *needle,
+                      size_t nlen) {
+      return std::search(hay.begin(), hay.end(), needle, needle + nlen,
+                         [](char a, char b) { return to_lower(a) == b; }) !=
+             hay.end();
+    };
+    return find_ci(line, "</script>", 9) || find_ci(line, "</pre>", 6) ||
+           find_ci(line, "</style>", 8) || find_ci(line, "</textarea>", 11);
   }
 
   case HtmlBlockType::Type2:
