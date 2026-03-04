@@ -168,8 +168,13 @@ std::string normalize_label(std::string_view label) {
       i++;
     } else {
       auto [cp, bytes] = inline_decode_utf8(label, i);
-      uint32_t lower = inline_unicode_tolower(cp);
-      result += encode_utf8(lower);
+      // Special case: ẞ (U+1E9E) case-folds to "ss"
+      if (cp == 0x1E9E) {
+        result += "ss";
+      } else {
+        uint32_t lower = inline_unicode_tolower(cp);
+        result += encode_utf8(lower);
+      }
       in_space = false;
       i += bytes;
     }
@@ -328,6 +333,7 @@ std::string normalize_title(std::string_view raw) {
 
 bool is_uri_autolink(std::string_view s) {
   size_t colon = s.find(':');
+  // Scheme must be 2-32 characters
   if (colon == std::string_view::npos || colon < 2 || colon > 32) {
     return false;
   }
@@ -341,6 +347,7 @@ bool is_uri_autolink(std::string_view s) {
       return false;
     }
   }
+  // URI part: no spaces, <, > characters
   for (char c : s.substr(colon + 1)) {
     if (is_ascii_space(c) || c == '<' || c == '>') {
       return false;
@@ -354,34 +361,193 @@ bool is_email_autolink(std::string_view s) {
   if (at == std::string_view::npos || at == 0 || at + 1 >= s.size()) {
     return false;
   }
-  auto is_label = [](char c) {
-    return std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '_' ||
-           c == '+' || c == '-';
-  };
+  // Local part: alphanumeric or .!#$%&'*+/=?^_`{|}~-
   for (size_t i = 0; i < at; i++) {
-    if (!is_label(s[i]))
+    char c = s[i];
+    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '.' ||
+          c == '!' || c == '#' || c == '$' || c == '%' || c == '&' ||
+          c == '\'' || c == '*' || c == '+' || c == '/' || c == '=' ||
+          c == '?' || c == '^' || c == '_' || c == '`' || c == '{' ||
+          c == '|' || c == '}' || c == '~' || c == '-'))
       return false;
   }
+  // Domain: label segments separated by dots
+  // Each label: [a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?
   bool has_dot = false;
-  for (size_t i = at + 1; i < s.size(); i++) {
-    if (!is_label(s[i]))
-      return false;
-    if (s[i] == '.')
-      has_dot = true;
+  size_t seg_start = at + 1;
+  for (size_t i = at + 1; i <= s.size(); i++) {
+    if (i == s.size() || s[i] == '.') {
+      size_t seg_len = i - seg_start;
+      if (seg_len == 0 || seg_len > 63)
+        return false;
+      if (!std::isalnum(static_cast<unsigned char>(s[seg_start])))
+        return false;
+      if (!std::isalnum(static_cast<unsigned char>(s[i - 1])))
+        return false;
+      for (size_t j = seg_start; j < i; j++) {
+        if (!(std::isalnum(static_cast<unsigned char>(s[j])) || s[j] == '-'))
+          return false;
+      }
+      if (i < s.size()) {
+        has_dot = true;
+        seg_start = i + 1;
+      }
+    }
   }
   return has_dot;
 }
 
-bool is_inline_html_tag(std::string_view s) {
-  if (s.size() < 3 || s.front() != '<' || s.back() != '>') {
-    return false;
+// Spec-compliant inline HTML scanner.
+// Returns position after closing '>' if valid inline HTML, else npos.
+// Handles: open tags, close tags, comments, PI, declarations, CDATA.
+size_t scan_inline_html(std::string_view s, size_t start) {
+  size_t len = s.size();
+  if (start + 1 >= len || s[start] != '<')
+    return std::string_view::npos;
+
+  char c1 = s[start + 1];
+
+  // --- Open tag: <tagname (attr)* spaces? /? > ---
+  if (std::isalpha(static_cast<unsigned char>(c1))) {
+    size_t i = start + 2;
+    // tag name: [A-Za-z][A-Za-z0-9-]*
+    while (i < len && (std::isalnum(static_cast<unsigned char>(s[i])) ||
+                       s[i] == '-'))
+      i++;
+    // attributes
+    for (;;) {
+      // skip whitespace (spaces, tabs, up to one newline)
+      size_t ws_start = i;
+      bool had_nl = false;
+      while (i < len && (s[i] == ' ' || s[i] == '\t' ||
+                         (!had_nl && (s[i] == '\n' || s[i] == '\r')))) {
+        if (s[i] == '\n' || s[i] == '\r') {
+          had_nl = true;
+          if (s[i] == '\r' && i + 1 < len && s[i + 1] == '\n')
+            i++;
+        }
+        i++;
+      }
+      if (i >= len)
+        return std::string_view::npos;
+      if (s[i] == '>')
+        return i + 1;
+      if (s[i] == '/' && i + 1 < len && s[i + 1] == '>')
+        return i + 2;
+      // Must have had whitespace to start an attribute
+      if (i == ws_start)
+        return std::string_view::npos;
+      // attribute_name: [A-Za-z_:][A-Za-z0-9_.:-]*
+      if (!(std::isalpha(static_cast<unsigned char>(s[i])) || s[i] == '_' ||
+            s[i] == ':'))
+        return std::string_view::npos;
+      i++;
+      while (i < len && (std::isalnum(static_cast<unsigned char>(s[i])) ||
+                         s[i] == '_' || s[i] == '.' || s[i] == ':' ||
+                         s[i] == '-'))
+        i++;
+      // optional attribute_value_spec
+      size_t before_eq = i;
+      // skip spaces before =
+      while (i < len && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' ||
+                         s[i] == '\r'))
+        i++;
+      if (i < len && s[i] == '=') {
+        i++; // skip =
+        // skip spaces after =
+        while (i < len && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' ||
+                           s[i] == '\r'))
+          i++;
+        if (i >= len)
+          return std::string_view::npos;
+        if (s[i] == '\'' || s[i] == '"') {
+          char q = s[i];
+          i++;
+          while (i < len && s[i] != q)
+            i++;
+          if (i >= len)
+            return std::string_view::npos;
+          i++; // skip closing quote
+        } else {
+          // unquoted: [^"'=<>`\s]+
+          size_t val_start = i;
+          while (i < len && s[i] != '"' && s[i] != '\'' && s[i] != '=' &&
+                 s[i] != '<' && s[i] != '>' && s[i] != '`' &&
+                 !is_ascii_space(s[i]))
+            i++;
+          if (i == val_start)
+            return std::string_view::npos;
+        }
+      } else {
+        // No = sign — boolean attribute, backtrack whitespace
+        i = before_eq;
+      }
+    }
   }
-  if (s.find('\n') != std::string_view::npos || s.find('\r') != std::string_view::npos) {
-    return false;
+
+  // --- Closing tag: </tagname spaces? > ---
+  if (c1 == '/' && start + 2 < len &&
+      std::isalpha(static_cast<unsigned char>(s[start + 2]))) {
+    size_t i = start + 3;
+    while (i < len && (std::isalnum(static_cast<unsigned char>(s[i])) ||
+                       s[i] == '-'))
+      i++;
+    while (i < len && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' ||
+                       s[i] == '\r'))
+      i++;
+    if (i < len && s[i] == '>')
+      return i + 1;
+    return std::string_view::npos;
   }
-  char first = s[1];
-  return std::isalpha(static_cast<unsigned char>(first)) || first == '/' ||
-         first == '!' || first == '?';
+
+  // --- HTML comment: <!-- ... --> ---
+  // Scan for first --> after the opening <!--. The closing --> can
+  // overlap with the opening (e.g. <!-->  and <!---> are valid).
+  if (c1 == '!' && start + 3 < len && s[start + 2] == '-' &&
+      s[start + 3] == '-') {
+    for (size_t i = start + 2; i + 2 < len; i++) {
+      if (s[i] == '-' && s[i + 1] == '-' && s[i + 2] == '>')
+        return i + 3;
+    }
+    return std::string_view::npos;
+  }
+
+  // --- Processing instruction: <? ... ?> ---
+  if (c1 == '?') {
+    size_t i = start + 2;
+    while (i + 1 < len) {
+      if (s[i] == '?' && s[i + 1] == '>')
+        return i + 2;
+      i++;
+    }
+    return std::string_view::npos;
+  }
+
+  // --- CDATA: <![CDATA[ ... ]]> ---
+  if (c1 == '!' && start + 8 < len && s[start + 2] == '[' &&
+      s[start + 3] == 'C' && s[start + 4] == 'D' && s[start + 5] == 'A' &&
+      s[start + 6] == 'T' && s[start + 7] == 'A' && s[start + 8] == '[') {
+    size_t i = start + 9;
+    while (i + 2 < len) {
+      if (s[i] == ']' && s[i + 1] == ']' && s[i + 2] == '>')
+        return i + 3;
+      i++;
+    }
+    return std::string_view::npos;
+  }
+
+  // --- Declaration: <! UPPERCASE ... > ---
+  if (c1 == '!' && start + 2 < len &&
+      std::isupper(static_cast<unsigned char>(s[start + 2]))) {
+    size_t i = start + 3;
+    while (i < len && s[i] != '>')
+      i++;
+    if (i < len)
+      return i + 1;
+    return std::string_view::npos;
+  }
+
+  return std::string_view::npos;
 }
 
 bool is_delimiter_text_node(const std::vector<Delimiter> &delims, size_t idx) {
@@ -434,19 +600,85 @@ bool trim_trailing_spaces(std::vector<InlineNode> *nodes, size_t min_count) {
   return total_removed >= min_count;
 }
 
-bool is_left_flanking(char before, char after) {
-  bool after_space = (after == '\0') || is_ascii_space(after);
-  bool after_punct = (after != '\0') && is_ascii_punct(after);
-  bool before_space = (before == '\0') || is_ascii_space(before);
-  bool before_punct = (before != '\0') && is_ascii_punct(before);
+// Unicode-aware punctuation check for CommonMark flanking rules.
+// "Unicode punctuation character" = Pc, Pd, Pe, Pf, Pi, Po, Ps categories,
+// OR anything in ASCII range that is not a letter, digit, or whitespace.
+bool is_unicode_punct_cp(uint32_t cp) {
+  // ASCII range: anything that's not letter, digit, or whitespace
+  if (cp < 0x80) {
+    return is_ascii_punct(static_cast<char>(cp));
+  }
+  // General punctuation block (U+2000-U+206F) — includes various dashes, quotes
+  if (cp >= 0x2010 && cp <= 0x2027) return true; // Pd, Pi, Pf, Po, Ps, Pe
+  if (cp >= 0x2030 && cp <= 0x205E) return true;
+  // CJK punctuation
+  if (cp >= 0x3000 && cp <= 0x303F) return true;
+  // Fullwidth punctuation
+  if (cp >= 0xFF01 && cp <= 0xFF0F) return true;
+  if (cp >= 0xFF1A && cp <= 0xFF20) return true;
+  if (cp >= 0xFF3B && cp <= 0xFF40) return true;
+  if (cp >= 0xFF5B && cp <= 0xFF65) return true;
+  // Latin-1 supplement punctuation
+  if (cp == 0x00A1 || cp == 0x00A7 || cp == 0x00AB || cp == 0x00B6 ||
+      cp == 0x00B7 || cp == 0x00BB || cp == 0x00BF) return true;
+  // Specific Unicode punctuation categories
+  if (cp == 0x2014 || cp == 0x2013) return true; // em dash, en dash
+  if (cp >= 0x2018 && cp <= 0x201F) return true; // quotes
+  if (cp == 0x2026) return true; // ellipsis
+  // Sc (Symbol, currency) — included per CommonMark 0.31.2
+  if (cp == 0x00A2 || cp == 0x00A3 || cp == 0x00A4 || cp == 0x00A5) return true;
+  if (cp == 0x058F || cp == 0x060B || cp == 0x07FE || cp == 0x07FF) return true;
+  if (cp == 0x09F2 || cp == 0x09F3 || cp == 0x09FB || cp == 0x0AF1) return true;
+  if (cp == 0x0BF9 || cp == 0x0E3F || cp == 0x17DB) return true;
+  if (cp >= 0x20A0 && cp <= 0x20CF) return true; // Currency symbols block (€ etc)
+  if (cp == 0xA838 || cp == 0xFDFC || cp == 0xFE69 || cp == 0xFF04) return true;
+  if (cp >= 0xFFE0 && cp <= 0xFFE6) return true;
+  return false;
+}
+
+bool is_unicode_space_cp(uint32_t cp) {
+  if (cp < 0x80) return is_ascii_space(static_cast<char>(cp));
+  // Unicode Zs category (space separators)
+  if (cp == 0x00A0 || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200A) ||
+      cp == 0x202F || cp == 0x205F || cp == 0x3000)
+    return true;
+  return false;
+}
+
+// Get character/codepoint before position (looking back through UTF-8)
+uint32_t get_cp_before(std::string_view s, size_t pos) {
+  if (pos == 0) return 0; // treat SOL as whitespace sentinel
+  // Walk back to find start of UTF-8 sequence
+  size_t back = pos - 1;
+  while (back > 0 && (static_cast<unsigned char>(s[back]) & 0xC0) == 0x80)
+    back--;
+  auto [cp, len] = inline_decode_utf8(s, back);
+  return cp;
+}
+
+uint32_t get_cp_at(std::string_view s, size_t pos) {
+  if (pos >= s.size()) return 0; // treat EOL as whitespace sentinel
+  auto [cp, len] = inline_decode_utf8(s, pos);
+  return cp;
+}
+
+bool is_left_flanking_unicode(std::string_view s, size_t run_start, size_t run_end) {
+  uint32_t before_cp = get_cp_before(s, run_start);
+  uint32_t after_cp = get_cp_at(s, run_end);
+  bool after_space = (after_cp == 0) || is_unicode_space_cp(after_cp);
+  bool after_punct = (after_cp != 0) && is_unicode_punct_cp(after_cp);
+  bool before_space = (before_cp == 0) || is_unicode_space_cp(before_cp);
+  bool before_punct = (before_cp != 0) && is_unicode_punct_cp(before_cp);
   return !after_space && (!after_punct || before_space || before_punct);
 }
 
-bool is_right_flanking(char before, char after) {
-  bool after_space = (after == '\0') || is_ascii_space(after);
-  bool after_punct = (after != '\0') && is_ascii_punct(after);
-  bool before_space = (before == '\0') || is_ascii_space(before);
-  bool before_punct = (before != '\0') && is_ascii_punct(before);
+bool is_right_flanking_unicode(std::string_view s, size_t run_start, size_t run_end) {
+  uint32_t before_cp = get_cp_before(s, run_start);
+  uint32_t after_cp = get_cp_at(s, run_end);
+  bool after_space = (after_cp == 0) || is_unicode_space_cp(after_cp);
+  bool after_punct = (after_cp != 0) && is_unicode_punct_cp(after_cp);
+  bool before_space = (before_cp == 0) || is_unicode_space_cp(before_cp);
+  bool before_punct = (before_cp != 0) && is_unicode_punct_cp(before_cp);
   return !before_space && (!before_punct || after_space || after_punct);
 }
 
@@ -479,8 +711,16 @@ void remove_node(std::vector<InlineNode> *nodes, std::vector<Delimiter> *delims,
   }
 }
 
-void process_emphasis(std::vector<InlineNode> *nodes, std::vector<Delimiter> *delims) {
-  for (size_t ci = 0; ci < delims->size(); ci++) {
+void process_emphasis(std::vector<InlineNode> *nodes, std::vector<Delimiter> *delims,
+                      size_t start_delim = 0) {
+  // openers_bottom prevents O(n²) behavior: when we fail to find an opener
+  // for a closer of character c, we record how far back we searched so
+  // future closers of the same character don't re-scan past that point.
+  // Keyed by (delim_char * 4 + closer_length%3) to match the spec's
+  // refined bottom tracking.
+  std::unordered_map<int, ssize_t> openers_bottom;
+
+  for (size_t ci = start_delim; ci < delims->size(); ci++) {
     bool keep_trying = true;
     while (keep_trying) {
       keep_trying = false;
@@ -491,8 +731,15 @@ void process_emphasis(std::vector<InlineNode> *nodes, std::vector<Delimiter> *de
       if (!closer.active || !closer.can_close || closer.length == 0)
         break;
 
+      int bottom_key = static_cast<int>(closer.delim_char) * 4 +
+                        static_cast<int>(closer.length % 3);
+      ssize_t bottom = static_cast<ssize_t>(start_delim) - 1;
+      auto bit = openers_bottom.find(bottom_key);
+      if (bit != openers_bottom.end())
+        bottom = bit->second;
+
       ssize_t opener_i = -1;
-      for (ssize_t oi = static_cast<ssize_t>(ci) - 1; oi >= 0; oi--) {
+      for (ssize_t oi = static_cast<ssize_t>(ci) - 1; oi > bottom; oi--) {
         Delimiter &opener = (*delims)[static_cast<size_t>(oi)];
         if (!opener.active || !opener.can_open || opener.length == 0)
           continue;
@@ -506,8 +753,11 @@ void process_emphasis(std::vector<InlineNode> *nodes, std::vector<Delimiter> *de
         break;
       }
 
-      if (opener_i < 0)
+      if (opener_i < 0) {
+        // No opener found — record bottom so we don't rescan this range
+        openers_bottom[bottom_key] = static_cast<ssize_t>(ci) - 1;
         break;
+      }
 
       Delimiter &opener = (*delims)[static_cast<size_t>(opener_i)];
       size_t use = (opener.length >= 2 && closer.length >= 2) ? 2 : 1;
@@ -564,16 +814,23 @@ void process_emphasis(std::vector<InlineNode> *nodes, std::vector<Delimiter> *de
 }
 
 std::vector<InlineNode> parse_inlines(
-    std::string_view input, bool allow_links,
+    std::string_view input,
     const std::unordered_map<std::string, LinkDef> *link_defs = nullptr);
 
 size_t parse_link_label_end(std::string_view s, size_t open_bracket) {
   size_t depth = 0;
+  // CommonMark spec: link labels can contain at most 999 characters.
+  // Enforcing this limit also bounds each scan to O(999), preventing
+  // O(n²) behavior when the input has many unclosed brackets.
+  size_t label_chars = 0;
   for (size_t i = open_bracket; i < s.size(); i++) {
     char c = s[i];
     if (c == '\\') {
       if (i + 1 < s.size())
         i++;
+      label_chars++;
+      if (label_chars > 999)
+        return std::string_view::npos;
       continue;
     }
     if (c == '`') {
@@ -602,6 +859,9 @@ size_t parse_link_label_end(std::string_view s, size_t open_bracket) {
       if (!found) {
         i = tick_start; // will be incremented by for loop
       }
+      label_chars += (i - tick_start + 1);
+      if (label_chars > 999)
+        return std::string_view::npos;
       continue;
     }
     if (c == '[') {
@@ -612,6 +872,9 @@ size_t parse_link_label_end(std::string_view s, size_t open_bracket) {
         return i;
       }
     }
+    label_chars++;
+    if (label_chars > 999)
+      return std::string_view::npos;
   }
   return std::string_view::npos;
 }
@@ -745,10 +1008,19 @@ bool parse_inline_link(std::string_view s, size_t after_label, size_t *end_pos,
 }
 
 std::vector<InlineNode> parse_inlines(
-    std::string_view input, bool allow_links,
+    std::string_view input,
     const std::unordered_map<std::string, LinkDef> *link_defs) {
+  struct BracketEntry {
+    size_t node_index;   // index in nodes where [ or ![ text was inserted
+    size_t delim_count;  // number of delimiters at time of push
+    bool is_image;
+    bool active;
+    size_t input_pos;    // position in input AFTER the [ character
+  };
+
   std::vector<InlineNode> nodes;
   std::vector<Delimiter> delimiters;
+  std::vector<BracketEntry> brackets;
 
   size_t i = 0;
   while (i < input.size()) {
@@ -760,16 +1032,16 @@ std::vector<InlineNode> parse_inlines(
         i++;
       }
       size_t run_len = i - run_start;
-      char before = (run_start == 0) ? '\0' : input[run_start - 1];
-      char after = (i < input.size()) ? input[i] : '\0';
 
-      bool left = is_left_flanking(before, after);
-      bool right = is_right_flanking(before, after);
+      bool left = is_left_flanking_unicode(input, run_start, i);
+      bool right = is_right_flanking_unicode(input, run_start, i);
       bool can_open = left;
       bool can_close = right;
       if (c == '_') {
-        can_open = left && (!right || is_ascii_punct(before));
-        can_close = right && (!left || is_ascii_punct(after));
+        uint32_t before_cp = get_cp_before(input, run_start);
+        uint32_t after_cp = get_cp_at(input, i);
+        can_open = left && (!right || is_unicode_punct_cp(before_cp));
+        can_close = right && (!left || is_unicode_punct_cp(after_cp));
       }
 
       InlineNode t;
@@ -872,15 +1144,15 @@ std::vector<InlineNode> parse_inlines(
     }
 
     if (c == '<') {
+      // Try autolink first: find the first > that doesn't cross a newline
       size_t gt = input.find('>', i + 1);
       if (gt != std::string_view::npos) {
         std::string_view inner = input.substr(i + 1, gt - (i + 1));
-        if (is_uri_autolink(inner) || is_email_autolink(inner)) {
-          InlineNode link;
-          link.kind = InlineKind::Link;
-          // Autolinks: percent-encode unsafe chars but don't process
-          // backslash escapes or entities
-          {
+        if (inner.find('\n') == std::string_view::npos &&
+            inner.find('\r') == std::string_view::npos) {
+          if (is_uri_autolink(inner) || is_email_autolink(inner)) {
+            InlineNode link;
+            link.kind = InlineKind::Link;
             std::string raw_url =
                 is_email_autolink(inner)
                     ? ("mailto:" + std::string(inner))
@@ -888,128 +1160,201 @@ std::vector<InlineNode> parse_inlines(
             std::string encoded_url;
             for (size_t ai = 0; ai < raw_url.size(); ai++) {
               unsigned char ac = static_cast<unsigned char>(raw_url[ai]);
-              if (ac > 0x7F || ac == '"' || ac == '\\') {
+              if (ac > 0x7F || ac == '"' || ac == '\\' || ac == '[' ||
+                  ac == ']' || ac == '^' || ac == '`' || ac == '{' ||
+                  ac == '|' || ac == '}' || ac < 0x20) {
                 percent_encode_byte(encoded_url, ac);
               } else {
                 encoded_url += static_cast<char>(ac);
               }
             }
             link.url = std::move(encoded_url);
+            InlineNode txt;
+            txt.kind = InlineKind::Text;
+            txt.literal = std::string(inner);
+            link.children.push_back(std::move(txt));
+            nodes.push_back(std::move(link));
+            i = gt + 1;
+            continue;
           }
-          InlineNode txt;
-          txt.kind = InlineKind::Text;
-          txt.literal = std::string(inner);
-          link.children.push_back(std::move(txt));
-          nodes.push_back(std::move(link));
-          i = gt + 1;
-          continue;
-        }
-
-        std::string_view raw = input.substr(i, gt - i + 1);
-        if (is_inline_html_tag(raw)) {
-          InlineNode html;
-          html.kind = InlineKind::Html;
-          html.literal = std::string(raw);
-          nodes.push_back(std::move(html));
-          i = gt + 1;
-          continue;
         }
       }
+
+      // Try inline HTML (all 6 forms, possibly multi-line)
+      size_t html_end = scan_inline_html(input, i);
+      if (html_end != std::string_view::npos) {
+        InlineNode html;
+        html.kind = InlineKind::Html;
+        html.literal = std::string(input.substr(i, html_end - i));
+        nodes.push_back(std::move(html));
+        i = html_end;
+        continue;
+      }
+
       append_text(&nodes, delimiters, "<");
       i++;
       continue;
     }
 
-    if (c == '[' && !allow_links) {
-      append_text(&nodes, delimiters, "[");
+    // ![ — image bracket opener
+    if (c == '!' && i + 1 < input.size() && input[i + 1] == '[') {
+      InlineNode t;
+      t.kind = InlineKind::Text;
+      t.literal = "![";
+      nodes.push_back(std::move(t));
+      // Add dummy delimiter so append_text won't merge into this node
+      delimiters.push_back({nodes.size() - 1, 0, '\0', false, false, true});
+      brackets.push_back({nodes.size() - 1, delimiters.size(), true, true, i + 2});
+      i += 2;
+      continue;
+    }
+
+    // ! not followed by [
+    if (c == '!') {
+      append_text(&nodes, delimiters, "!");
       i++;
       continue;
     }
 
-    if ((c == '!' && i + 1 < input.size() && input[i + 1] == '[') ||
-        (c == '[' && allow_links)) {
-      bool is_image = (c == '!');
-      size_t open = is_image ? i + 1 : i;
-      size_t close = parse_link_label_end(input, open);
-      if (close == std::string_view::npos) {
-        append_text(&nodes, delimiters, is_image ? "!" : "[");
-        i += is_image ? 1 : 1;
+    // [ — link bracket opener
+    if (c == '[') {
+      InlineNode t;
+      t.kind = InlineKind::Text;
+      t.literal = "[";
+      nodes.push_back(std::move(t));
+      // Add dummy delimiter so append_text won't merge into this node
+      delimiters.push_back({nodes.size() - 1, 0, '\0', false, false, true});
+      brackets.push_back({nodes.size() - 1, delimiters.size(), false, true, i + 1});
+      i++;
+      continue;
+    }
+
+    // ] — try to close a bracket and form link/image
+    if (c == ']') {
+      // Find most recent bracket entry (active or not)
+      if (brackets.empty()) {
+        append_text(&nodes, delimiters, "]");
+        i++;
         continue;
       }
 
-      std::string_view label =
-          input.substr(open + 1, close - (open + 1));
+      BracketEntry bracket = brackets.back();
+      brackets.pop_back();
+
+      if (!bracket.active) {
+        // Inactive bracket — emit literal ]
+        append_text(&nodes, delimiters, "]");
+        i++;
+        continue;
+      }
+
+      // Active bracket — try to form link/image
+      std::string_view label = input.substr(bracket.input_pos,
+                                            i - bracket.input_pos);
+      size_t after_close = i + 1;
+      std::string url, title;
       size_t end_pos = 0;
-      std::string url;
-      std::string title;
-      if (parse_inline_link(input, close + 1, &end_pos, &url, &title)) {
-        InlineNode node;
-        node.kind = is_image ? InlineKind::Image : InlineKind::Link;
-        node.url = normalize_url(url);
-        node.title = normalize_title(title);
-        node.children = parse_inlines(label, !allow_links, link_defs);
-        nodes.push_back(std::move(node));
-        i = end_pos;
-        continue;
+      bool matched = false;
+
+      // Try inline link: ](url "title")
+      if (parse_inline_link(input, after_close, &end_pos, &url, &title)) {
+        matched = true;
       }
 
-      // Try reference links if link_defs available
-      if (link_defs) {
-        // Try full reference: [text][label]
-        if (close + 1 < input.size() && input[close + 1] == '[') {
-          size_t ref_close = parse_link_label_end(input, close + 1);
-          if (ref_close != std::string_view::npos) {
-            std::string_view ref_label =
-                input.substr(close + 2, ref_close - close - 2);
-            std::string key = normalize_label(ref_label);
+      // Try reference links
+      if (!matched && link_defs) {
+        if (after_close < input.size() && input[after_close] == '[') {
+          // Could be collapsed [text][] or full reference [text][label]
+          if (after_close + 1 < input.size() && input[after_close + 1] == ']') {
+            // Collapsed reference: [text][]
+            std::string key = normalize_label(label);
             auto it = link_defs->find(key);
             if (it != link_defs->end()) {
-              InlineNode node;
-              node.kind = is_image ? InlineKind::Image : InlineKind::Link;
-              node.url = normalize_url(it->second.url);
-              node.title = normalize_title(it->second.title);
-              node.children = parse_inlines(label, !allow_links, link_defs);
-              nodes.push_back(std::move(node));
-              i = ref_close + 1;
-              continue;
+              url = it->second.url;
+              title = it->second.title;
+              end_pos = after_close + 2;
+              matched = true;
             }
           }
-        }
-        // Try collapsed reference: [text][]
-        if (close + 2 < input.size() && input[close + 1] == '[' &&
-            input[close + 2] == ']') {
-          std::string key = normalize_label(label);
-          auto it = link_defs->find(key);
-          if (it != link_defs->end()) {
-            InlineNode node;
-            node.kind = is_image ? InlineKind::Image : InlineKind::Link;
-            node.url = normalize_url(it->second.url);
-            node.title = normalize_title(it->second.title);
-            node.children = parse_inlines(label, !allow_links, link_defs);
-            nodes.push_back(std::move(node));
-            i = close + 3;
-            continue;
+          if (!matched) {
+            // Full reference: [text][label]
+            size_t ref_close = parse_link_label_end(input, after_close);
+            if (ref_close != std::string_view::npos) {
+              std::string_view ref_label =
+                  input.substr(after_close + 1, ref_close - after_close - 1);
+              std::string key = normalize_label(ref_label);
+              if (!key.empty()) {
+                auto it = link_defs->find(key);
+                if (it != link_defs->end()) {
+                  url = it->second.url;
+                  title = it->second.title;
+                  end_pos = ref_close + 1;
+                  matched = true;
+                }
+              }
+            }
           }
-        }
-        // Try shortcut reference: [text]
-        {
+          // If [ follows ] but no reference matched, DON'T try shortcut
+        } else {
+          // No [ after ] — try shortcut reference: [text]
           std::string key = normalize_label(label);
           auto it = link_defs->find(key);
           if (it != link_defs->end()) {
-            InlineNode node;
-            node.kind = is_image ? InlineKind::Image : InlineKind::Link;
-            node.url = normalize_url(it->second.url);
-            node.title = normalize_title(it->second.title);
-            node.children = parse_inlines(label, !allow_links, link_defs);
-            nodes.push_back(std::move(node));
-            i = close + 1;
-            continue;
+            url = it->second.url;
+            title = it->second.title;
+            end_pos = after_close;
+            matched = true;
           }
         }
       }
 
-      append_text(&nodes, delimiters, is_image ? "![" : "[");
-      i += is_image ? 2 : 1;
+      if (!matched) {
+        // Could not form link — emit literal ]
+        append_text(&nodes, delimiters, "]");
+        i++;
+        continue;
+      }
+
+      // Successfully matched link/image!
+      bool is_image = bracket.is_image;
+      size_t opener_idx = bracket.node_index;
+
+      // Process emphasis within the link/image range
+      process_emphasis(&nodes, &delimiters, bracket.delim_count);
+
+      // Collect children (all nodes after the opener text node)
+      InlineNode link_node;
+      link_node.kind = is_image ? InlineKind::Image : InlineKind::Link;
+      link_node.url = normalize_url(url);
+      link_node.title = normalize_title(title);
+
+      size_t child_start = opener_idx + 1;
+      for (size_t ni = child_start; ni < nodes.size(); ni++) {
+        link_node.children.push_back(std::move(nodes[ni]));
+      }
+
+      // Remove children from main list and replace opener with link node
+      nodes.erase(nodes.begin() + static_cast<long>(child_start), nodes.end());
+      nodes[opener_idx] = std::move(link_node);
+
+      // Deactivate delimiters that were within the link
+      for (auto &d : delimiters) {
+        if (d.node_index >= child_start) {
+          d.active = false;
+        }
+      }
+
+      // If this is a link (not image), deactivate all prior [ brackets
+      // to prevent links within links
+      if (!is_image) {
+        for (auto &b : brackets) {
+          if (!b.is_image) {
+            b.active = false;
+          }
+        }
+      }
+
+      i = end_pos;
       continue;
     }
 
@@ -1029,7 +1374,8 @@ std::vector<InlineNode> parse_inlines(
     while (i < input.size()) {
       char ch = input[i];
       if (ch == '*' || ch == '_' || ch == '`' || ch == '\\' || ch == '&' ||
-          ch == '<' || ch == '\n' || ch == '\r' || ch == '[' || ch == '!') {
+          ch == '<' || ch == '\n' || ch == '\r' || ch == '[' || ch == ']' ||
+          ch == '!') {
         break;
       }
       i++;
@@ -1133,7 +1479,7 @@ std::string render_nodes_html(const std::vector<InlineNode> &nodes) {
 std::string render_inlines_html(
     std::string_view text,
     const std::unordered_map<std::string, LinkDef> *link_defs) {
-  std::vector<InlineNode> nodes = parse_inlines(text, true, link_defs);
+  std::vector<InlineNode> nodes = parse_inlines(text, link_defs);
   return render_nodes_html(nodes);
 }
 

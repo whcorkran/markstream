@@ -195,15 +195,21 @@ void HtmlRenderer::render_list_item(ASTNode::Ptr node, const ListData *list) {
           output_ += render_inlines_html(trim_trailing_ws(text), link_defs_);
         }
       } else {
-        output_ += "\n";
+        // Add newline before block child, but avoid double-newline
+        if (output_.empty() || output_.back() != '\n')
+          output_ += "\n";
         render_node(child);
       }
     }
     output_ += "</li>\n";
   } else {
     // Loose list: render children normally
-    output_ += "\n";
-    render_children(node);
+    if (node->children().empty()) {
+      // Empty item: <li></li>
+    } else {
+      output_ += "\n";
+      render_children(node);
+    }
     output_ += "</li>\n";
   }
 }

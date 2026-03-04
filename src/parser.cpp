@@ -138,8 +138,21 @@ ASTNode::Ptr Parser::add_child(ASTNode::Ptr parent, NodeType block_type,
   if (!parent)
     return nullptr;
 
-  // If parent can't contain this child, finalize blocks off the stack
-  // until we find one that can
+  // First, finalize any blocks on the stack that are deeper than parent.
+  // These are unmatched blocks from phase 1 that must be closed before
+  // we create a new block.  This ensures that e.g. a thematic break at
+  // the document level isn't placed inside an unmatched list item.
+  for (size_t i = 0; i < open_blocks_.size(); i++) {
+    if (open_blocks_[i] == parent) {
+      while (open_blocks_.size() > i + 1) {
+        finalize(open_blocks_.back());
+        open_blocks_.pop_back();
+      }
+      break;
+    }
+  }
+
+  // Now walk up from parent if it can't contain this child type
   while (!can_contain(parent->type(), block_type)) {
     finalize(open_blocks_.back());
     open_blocks_.pop_back();
@@ -437,6 +450,25 @@ size_t Parser::try_parse_link_ref_def(const std::string &content, size_t start) 
   return i - start;
 }
 
+// Walk down last-child chains of List/Item nodes to check whether the
+// subtree effectively ends with a blank line.  Leaf nodes (Paragraph,
+// CodeBlock, …) keep their last_line_blank flag intact because the
+// propagation in add_text_to_container only clears ancestors.
+static bool ends_with_blank_line(const ASTNode::Ptr &node) {
+  ASTNode::Ptr n = node;
+  while (n) {
+    if (n->last_line_blank())
+      return true;
+    NodeType t = n->type();
+    if (t == NodeType::List || t == NodeType::Item) {
+      n = n->last_child();
+    } else {
+      return false;
+    }
+  }
+  return false;
+}
+
 // Finalize a single block: close it, perform type-specific cleanup.
 // The caller is responsible for popping from open_blocks_ when appropriate.
 void Parser::finalize(ASTNode::Ptr b) {
@@ -493,7 +525,9 @@ void Parser::finalize(ASTNode::Ptr b) {
   }
 
   case NodeType::List: {
-    // Determine tight/loose status by iterating children vectors
+    // Determine tight/loose status by iterating children vectors.
+    // Use ends_with_blank_line() which walks last-child chains to find
+    // blank-line flags that survive the ancestor-clearing propagation.
     ListData *list_data = b->get_data<ListData>();
     if (list_data) {
       list_data->is_tight = true;
@@ -503,7 +537,7 @@ void Parser::finalize(ASTNode::Ptr b) {
         const auto &item = items[i];
         bool has_next_item = (i + 1 < items.size());
 
-        if (item->last_line_blank() && has_next_item) {
+        if (ends_with_blank_line(item) && has_next_item) {
           list_data->is_tight = false;
           break;
         }
@@ -514,7 +548,7 @@ void Parser::finalize(ASTNode::Ptr b) {
           const auto &subitem = subitems[j];
           bool has_next_subitem = (j + 1 < subitems.size());
           if ((has_next_item || has_next_subitem) &&
-              subitem->last_line_blank()) {
+              ends_with_blank_line(subitem)) {
             list_data->is_tight = false;
             break;
           }
@@ -928,9 +962,27 @@ Parser::BlockStart Parser::try_setext_heading(OpenBlockCtx &ctx) {
   // The paragraph is at open_blocks_.back(). Its parent is one level up.
   int level = (setext_char == '=') ? 1 : 2;
 
-  // Save content and position from paragraph
+  // Extract link reference definitions from paragraph content first
   std::string para_content =
       std::move(const_cast<std::string &>(ctx.container->content()));
+  size_t refdef_pos = 0;
+  while (refdef_pos < para_content.size()) {
+    size_t consumed = try_parse_link_ref_def(para_content, refdef_pos);
+    if (consumed == 0)
+      break;
+    refdef_pos += consumed;
+  }
+  if (refdef_pos > 0) {
+    para_content = para_content.substr(refdef_pos);
+  }
+
+  // If all content was link ref defs, the === line is not a setext heading
+  if (para_content.empty()) {
+    // Restore state: put remaining line as new paragraph content
+    ctx.container->set_content(std::string(""));
+    return BlockStart::None;
+  }
+
   int start_line = ctx.container->start_line();
   int start_col = ctx.container->start_col();
 
@@ -1001,8 +1053,11 @@ Parser::BlockStart Parser::try_list_item(OpenBlockCtx &ctx) {
       return BlockStart::None;
   }
 
+  // Advance past the list marker using column-based advancement.
+  // This correctly handles tabs by tracking partially consumed tabs,
+  // which preserves remaining tab columns for the content.
   advance_offset(ctx.line, ctx.offset, ctx.column,
-                 ctx.fn.offset + matched - ctx.offset, false,
+                 list_info.marker_width, true,
                  ctx.partially_consumed_tab);
 
   // Create list data
@@ -1130,12 +1185,13 @@ void Parser::add_text_to_container(ASTNode::Ptr container,
 
   container->set_last_line_blank(fn.blank && is_blank_allowed);
 
-  // Propagate: all ancestor containers are not blank on this line
-  // (they contain content through their descendants)
+  // Propagate: ancestor containers (above container on the stack) are not
+  // blank on this line.  Only walk upward — do NOT clear descendants that
+  // are deeper on the stack, matching cmark's parent-walk behaviour.
   for (auto &ob : open_blocks_) {
-    if (ob != container) {
-      ob->set_last_line_blank(false);
-    }
+    if (ob == container)
+      break;
+    ob->set_last_line_blank(false);
   }
 
   // Lazy continuation check: if the deepest open block (from before phase 2)
@@ -1148,19 +1204,11 @@ void Parser::add_text_to_container(ASTNode::Ptr container,
                    partially_consumed_tab);
     add_line(deepest_before_new, line, offset, column, partially_consumed_tab);
   } else {
-    // Finalize any remaining unmatched blocks that are still open.
-    // Phase 2's add_child() may have already finalized some via
-    // can_contain() checks, so we only finalize blocks that are still open
-    // and still on the stack above last_matched_container.
-    //
-    // Strategy: find last_matched_container in the stack, then finalize
-    // and remove everything between it and the first block that was
-    // created by phase 2 (or the end of pre-phase-2 blocks).
-    {
-      // Find where last_matched_container sits on the stack.
-      // If add_child() in phase 2 already finalized it (because the new
-      // block type wasn't compatible), it won't be on the stack and
-      // there's nothing left to finalize.
+    // Finalize remaining unmatched blocks.  When phase 2 opened new blocks,
+    // add_child() already finalized unmatched blocks above the parent.
+    // We only need to finalize here when phase 2 did NOT open anything
+    // (container == last_matched_container).
+    if (container == last_matched_container) {
       bool found = false;
       size_t matched_idx = 0;
       for (size_t i = 0; i < open_blocks_.size(); i++) {
@@ -1172,9 +1220,6 @@ void Parser::add_text_to_container(ASTNode::Ptr container,
       }
 
       if (found) {
-        // Finalize unmatched blocks between matched_idx+1 and the end of
-        // the pre-phase-2 stack. Phase 2's add_child() may have already
-        // popped some, so cap at the current stack size.
         size_t finalize_end = std::min(pre_phase2_depth_, open_blocks_.size());
         if (finalize_end > matched_idx + 1) {
           for (size_t i = finalize_end; i > matched_idx + 1; i--) {
@@ -1185,8 +1230,6 @@ void Parser::add_text_to_container(ASTNode::Ptr container,
               open_blocks_.begin() + static_cast<long>(finalize_end));
         }
       }
-      // If !found, add_child() in phase 2 already finalized and popped
-      // all unmatched blocks (including last_matched_container itself).
     }
 
     NodeType container_type = container->type();

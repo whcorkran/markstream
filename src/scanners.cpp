@@ -598,9 +598,9 @@ bool scan_html_block_start_7(const std::string &line, size_t offset) {
     pos++;
   } else {
     // Open tag: attributes, then > or />
-    // Simple attribute scanning (not fully spec-compliant but sufficient)
     while (pos < line.size()) {
       // Skip whitespace
+      size_t ws_start = pos;
       while (pos < line.size() && is_space_or_tab(line[pos]))
         pos++;
 
@@ -616,6 +616,10 @@ bool scan_html_block_start_7(const std::string &line, size_t offset) {
         pos += 2;
         break;
       }
+
+      // Must have had whitespace before an attribute
+      if (pos == ws_start)
+        return false;
 
       // Must be start of attribute name
       if (!is_alpha(line[pos]) && line[pos] != '_' && line[pos] != ':')
